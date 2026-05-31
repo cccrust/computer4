@@ -1,3 +1,0 @@
-# iCE40-HX8K breakout board pin constraints
-set_io clk 78
-set_io led 95

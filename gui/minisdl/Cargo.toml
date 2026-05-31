@@ -1,0 +1,29 @@
+[package]
+name = "minisdl"
+version = "0.1.0"
+edition = "2021"
+description = "A lightweight SDL2-like multimedia library written in pure Rust"
+authors = ["MiniSDL Contributors"]
+
+[[example]]
+name = "hello_window"
+path = "examples/hello_window.rs"
+
+[[example]]
+name = "shapes"
+path = "examples/shapes.rs"
+
+[[example]]
+name = "live_window"
+path = "examples/live_window.rs"
+
+[features]
+default = ["software_render"]
+software_render = []
+
+[dependencies]
+# winit 0.28 + pixels 0.12 都使用 raw-window-handle 0.5 — 相容配對
+winit  = "=0.28.7"
+pixels = "=0.12.1"
+
+[dev-dependencies]

@@ -1,0 +1,1133 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Office 4</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500&family=Geist:wght@300;400;500;600&display=swap');
+
+:root {
+  --bg:      #0b0d13;
+  --panel:   #111318;
+  --panel2:  #161920;
+  --border:  #1c1f2a;
+  --border2: #242836;
+  --accent:  #5b8af5;
+  --accent2: #8b5cf6;
+  --green:   #22c55e;
+  --red:     #ef4444;
+  --amber:   #f59e0b;
+  --text:    #dde4f0;
+  --muted:   #525d78;
+  --cell-h:  24px;
+  --cell-w:  100px;
+  --hdr-w:   46px;
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  font-family: 'Geist', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+  overflow: hidden;
+}
+
+/* ── Full-height shell ── */
+#shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* ── Titlebar ── */
+#titlebar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 0 14px; height: 42px; flex-shrink: 0;
+  background: var(--panel); border-bottom: 1px solid var(--border);
+  user-select: none;
+}
+#o4logo {
+  font-family: 'IBM Plex Mono', monospace; font-size: 14px; font-weight: 500;
+  letter-spacing: 1px; color: #fff; flex-shrink: 0;
+  display: flex; align-items: center; gap: 6px;
+}
+#o4logo span { background: linear-gradient(135deg,var(--accent),var(--accent2)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+#doc-name {
+  background: transparent; border: 1px solid transparent; color: var(--text);
+  font-family: 'Geist', sans-serif; font-size: 13px; padding: 2px 8px;
+  border-radius: 4px; outline: none; width: 200px; transition: border-color .15s;
+}
+#doc-name:hover { border-color: var(--border2); }
+#doc-name:focus { border-color: var(--accent); background: #141720; }
+.tb-sep { width: 1px; height: 18px; background: var(--border2); flex-shrink: 0; }
+#module-tabs { display: flex; gap: 2px; margin-left: 4px; }
+.mod-tab {
+  display: flex; align-items: center; gap: 5px; padding: 4px 12px;
+  border-radius: 5px; border: 1px solid transparent; background: transparent;
+  color: var(--muted); font-family: 'Geist', sans-serif; font-size: 12px;
+  cursor: pointer; transition: all .12s;
+}
+.mod-tab svg { width: 13px; height: 13px; }
+.mod-tab:hover { color: var(--text); background: rgba(255,255,255,.04); }
+.mod-tab.active { color: var(--text); background: rgba(91,138,245,.12); border-color: rgba(91,138,245,.25); }
+.tb-btn {
+  display: flex; align-items: center; gap: 5px; padding: 3px 9px;
+  border: 1px solid var(--border2); border-radius: 4px; background: transparent;
+  color: var(--muted); font-family: 'Geist', sans-serif; font-size: 11px;
+  cursor: pointer; transition: all .12s; white-space: nowrap;
+}
+.tb-btn svg { width: 12px; height: 12px; flex-shrink: 0; }
+.tb-btn:hover { color: var(--text); border-color: var(--accent); background: rgba(91,138,245,.07); }
+.tb-btn.active { color: var(--accent); border-color: rgba(91,138,245,.4); background: rgba(91,138,245,.1); }
+.tb-btn.danger:hover { border-color: var(--red); color: var(--red); background: rgba(239,68,68,.07); }
+#ws-area { margin-left: auto; display: flex; align-items: center; gap: 7px; }
+#ws-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); transition: background .3s; }
+#ws-dot.on  { background: var(--green); box-shadow: 0 0 6px var(--green); }
+#ws-dot.err { background: var(--red); }
+#ws-label { color: var(--muted); font-size: 11px; font-family: 'IBM Plex Mono', monospace; }
+#user-pill { font-size: 11px; font-family: 'IBM Plex Mono', monospace; color: var(--accent); background: rgba(91,138,245,.1); padding: 2px 8px; border-radius: 99px; display: none; }
+
+/* ── Toolbar 2 ── */
+#toolbar2 {
+  display: flex; align-items: center; gap: 6px; padding: 0 12px;
+  height: 34px; flex-shrink: 0;
+  background: var(--panel2); border-bottom: 1px solid var(--border);
+}
+
+/* ── Main content area (fills rest of shell) ── */
+#main-area {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ══════════════════════════════════
+   SPREADSHEET
+   ══════════════════════════════════ */
+#app-sheet {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+#formula-bar {
+  display: flex; align-items: center; gap: 8px; padding: 0 12px;
+  height: 30px; flex-shrink: 0;
+  background: var(--panel); border-bottom: 1px solid var(--border);
+}
+#cell-ref {
+  font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--accent);
+  width: 48px; text-align: center; background: rgba(91,138,245,.08);
+  border: 1px solid rgba(91,138,245,.2); border-radius: 3px; padding: 2px 4px; flex-shrink: 0;
+}
+#formula-input { flex: 1; background: transparent; border: none; outline: none; color: var(--text); font-family: 'IBM Plex Mono', monospace; font-size: 12px; }
+#fx-label { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--accent2); flex-shrink: 0; }
+#grid-container { flex: 1; min-height: 0; overflow: auto; }
+#grid-wrapper { display: inline-flex; flex-direction: column; min-width: 100%; }
+#col-header-row { display: flex; position: sticky; top: 0; z-index: 20; background: var(--panel); border-bottom: 1px solid var(--border2); }
+.corner { width: var(--hdr-w); min-width: var(--hdr-w); height: var(--cell-h); background: var(--panel); border-right: 1px solid var(--border2); flex-shrink: 0; }
+.col-hdr { width: var(--cell-w); min-width: var(--cell-w); height: var(--cell-h); display: flex; align-items: center; justify-content: center; font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: var(--muted); border-right: 1px solid var(--border); user-select: none; letter-spacing: .5px; transition: all .1s; }
+.col-hdr.active { background: rgba(91,138,245,.1); color: var(--accent); }
+.grid-row { display: flex; }
+.row-hdr { width: var(--hdr-w); min-width: var(--hdr-w); height: var(--cell-h); display: flex; align-items: center; justify-content: flex-end; padding-right: 8px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: var(--muted); border-right: 1px solid var(--border2); border-bottom: 1px solid var(--border); background: var(--panel); user-select: none; flex-shrink: 0; position: sticky; left: 0; z-index: 10; transition: all .1s; }
+.row-hdr.active { background: rgba(91,138,245,.07); color: var(--accent); }
+.grid-cell { width: var(--cell-w); min-width: var(--cell-w); height: var(--cell-h); border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); padding: 0 5px; display: flex; align-items: center; overflow: hidden; cursor: cell; position: relative; font-size: 12px; transition: background .06s; white-space: nowrap; }
+.grid-cell:hover { background: rgba(255,255,255,.018); }
+.grid-cell.selected { background: rgba(91,138,245,.09) !important; outline: 1.5px solid var(--accent); outline-offset: -1px; z-index: 5; }
+.grid-cell .ct { overflow: hidden; text-overflow: ellipsis; pointer-events: none; width: 100%; }
+.grid-cell.num .ct { text-align: right; color: #93c5fd; font-family: 'IBM Plex Mono', monospace; font-size: 11px; }
+.grid-cell.formula .ct { color: var(--green); font-family: 'IBM Plex Mono', monospace; font-size: 11px; }
+.grid-cell.err .ct { color: var(--red); }
+@keyframes flash { 0% { box-shadow: inset 0 0 0 1.5px var(--amber); } 100% { box-shadow: none; } }
+.grid-cell.remote-flash { animation: flash .7s ease-out; }
+#cell-editor { position: fixed; display: none; z-index: 100; background: var(--bg); border: 1.5px solid var(--accent); box-shadow: 0 0 0 3px rgba(91,138,245,.14); padding: 0 5px; font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: var(--text); outline: none; height: var(--cell-h); line-height: var(--cell-h); }
+#statusline { height: 23px; display: flex; align-items: center; gap: 14px; padding: 0 12px; background: var(--panel); border-top: 1px solid var(--border); flex-shrink: 0; font-size: 11px; font-family: 'IBM Plex Mono', monospace; color: var(--muted); }
+#statusline .stat span { color: var(--text); }
+#statusline .stat.green span { color: var(--green); }
+#statusline .stat.blue span { color: var(--accent); }
+
+/* ══════════════════════════════════
+   SLIDES
+   ══════════════════════════════════ */
+#app-slides {
+  display: none;   /* toggled by JS to "flex" */
+  flex-direction: row;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Sidebar */
+#slides-sidebar { width: 180px; min-width: 180px; background: var(--panel); border-right: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; }
+#slides-list-header { display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+#slides-list-header span { font-size: 11px; color: var(--muted); font-family: 'IBM Plex Mono', monospace; }
+#btn-add-slide { width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; border: 1px solid var(--border2); border-radius: 4px; background: transparent; color: var(--muted); cursor: pointer; transition: all .12s; }
+#btn-add-slide:hover { border-color: var(--accent); color: var(--accent); background: rgba(91,138,245,.08); }
+#slides-list { flex: 1; overflow-y: auto; padding: 6px; }
+.slide-thumb { position: relative; border: 1.5px solid var(--border2); border-radius: 5px; margin-bottom: 6px; cursor: pointer; overflow: hidden; transition: border-color .12s; aspect-ratio: 16/9; }
+.slide-thumb:hover { border-color: var(--muted); }
+.slide-thumb.active { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(91,138,245,.2); }
+.slide-thumb canvas { width: 100%; height: 100%; display: block; }
+.slide-num { position: absolute; bottom: 3px; left: 5px; font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: rgba(255,255,255,.5); pointer-events: none; }
+.slide-del { position: absolute; top: 3px; right: 3px; width: 16px; height: 16px; border-radius: 3px; background: rgba(0,0,0,.7); border: none; color: var(--muted); font-size: 10px; cursor: pointer; display: none; align-items: center; justify-content: center; line-height: 1; transition: all .1s; }
+.slide-thumb:hover .slide-del { display: flex; }
+.slide-del:hover { color: var(--red); background: rgba(239,68,68,.25); }
+
+/* Canvas area */
+#slides-main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; background: #08090e; }
+#slides-canvas-wrap { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; overflow: auto; padding: 24px; }
+#slide-canvas { position: relative; box-shadow: 0 8px 48px rgba(0,0,0,.7); border-radius: 3px; overflow: hidden; width: 920px; height: 517px; flex-shrink: 0; }
+#slide-canvas-bg { position: absolute; inset: 0; z-index: 0; }
+
+/* Elements */
+.slide-el { position: absolute; cursor: move; user-select: none; }
+.el-border { position: absolute; inset: 0; pointer-events: none; border-radius: 2px; }
+.slide-el.selected .el-border { outline: 1.5px solid var(--accent); box-shadow: 0 0 0 2px rgba(91,138,245,.2); }
+.slide-text-content { padding: 4px; line-height: 1.3; width: 100%; height: 100%; overflow: hidden; white-space: pre-wrap; word-break: break-word; }
+.resize-handle { position: absolute; width: 8px; height: 8px; background: var(--accent); border: 1.5px solid #fff; border-radius: 2px; z-index: 30; }
+.resize-handle.br { bottom: -4px; right: -4px; cursor: nwse-resize; }
+.resize-handle.bl { bottom: -4px; left: -4px; cursor: nesw-resize; }
+.resize-handle.tr { top: -4px; right: -4px; cursor: nesw-resize; }
+.resize-handle.tl { top: -4px; left: -4px; cursor: nwse-resize; }
+
+/* Right props panel */
+#slides-props { width: 220px; min-width: 220px; background: var(--panel); border-left: 1px solid var(--border); display: flex; flex-direction: column; overflow-y: auto; }
+.props-section { padding: 11px 12px; border-bottom: 1px solid var(--border); }
+.props-title { font-size: 10px; font-family: 'IBM Plex Mono', monospace; color: var(--muted); letter-spacing: .8px; text-transform: uppercase; margin-bottom: 8px; }
+.prop-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; gap: 6px; }
+.prop-label { font-size: 11px; color: var(--muted); flex-shrink: 0; }
+.prop-input { flex: 1; background: #0d0f14; border: 1px solid var(--border2); border-radius: 3px; color: var(--text); font-size: 11px; font-family: 'IBM Plex Mono', monospace; padding: 3px 6px; outline: none; min-width: 0; transition: border-color .12s; }
+.prop-input:focus { border-color: var(--accent); }
+.prop-input[type=color] { padding: 1px 3px; height: 24px; cursor: pointer; }
+.prop-select { flex: 1; background: #0d0f14; border: 1px solid var(--border2); border-radius: 3px; color: var(--text); font-size: 11px; padding: 3px 5px; outline: none; cursor: pointer; }
+.prop-select:focus { border-color: var(--accent); }
+.prop-btn-row { display: flex; gap: 4px; flex-wrap: wrap; }
+.prop-btn { flex: 1; padding: 4px 6px; border: 1px solid var(--border2); border-radius: 3px; background: transparent; color: var(--muted); font-size: 11px; cursor: pointer; transition: all .12s; text-align: center; font-family: 'Geist', sans-serif; }
+.prop-btn:hover { color: var(--text); border-color: var(--accent); background: rgba(91,138,245,.07); }
+.prop-btn.active { color: var(--accent); border-color: rgba(91,138,245,.4); background: rgba(91,138,245,.1); }
+.prop-btn.danger:hover { border-color: var(--red); color: var(--red); background: rgba(239,68,68,.07); }
+#notes-area { resize: none; background: #0d0f14; border: 1px solid var(--border2); border-radius: 3px; color: var(--muted); font-size: 11px; font-family: 'Geist', sans-serif; padding: 6px; outline: none; width: 100%; height: 80px; transition: border-color .12s; }
+#notes-area:focus { border-color: var(--accent); }
+
+/* Presenter */
+#present-overlay { display: none; position: fixed; inset: 0; background: #000; z-index: 9999; flex-direction: column; align-items: center; justify-content: center; }
+#present-overlay.show { display: flex; }
+#present-canvas-wrap { position: relative; width: 100vw; height: 100vh; display: flex; align-items: center; justify-content: center; }
+#present-canvas-wrap canvas { max-width: 100vw; max-height: 100vh; object-fit: contain; }
+#present-overlay-controls { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); display: flex; gap: 10px; background: rgba(0,0,0,.75); padding: 8px 14px; border-radius: 99px; align-items: center; }
+.pctrl-btn { background: transparent; border: 1px solid rgba(255,255,255,.2); color: #fff; border-radius: 6px; padding: 4px 14px; cursor: pointer; font-size: 12px; transition: all .12s; }
+.pctrl-btn:hover { border-color: var(--accent); color: var(--accent); }
+#present-slide-num { color: var(--muted); font-family: 'IBM Plex Mono', monospace; font-size: 12px; padding: 0 10px; }
+
+/* Toast */
+#toast { position: fixed; bottom: 32px; right: 18px; padding: 7px 13px; background: #161920; border: 1px solid var(--border2); border-radius: 5px; font-size: 11px; color: var(--muted); opacity: 0; transform: translateY(4px); transition: all .2s; pointer-events: none; z-index: 9998; font-family: 'IBM Plex Mono', monospace; }
+#toast.show { opacity: 1; transform: translateY(0); }
+#toast.ok   { color: var(--green); border-color: rgba(34,197,94,.3); }
+#toast.err  { color: var(--red);   border-color: rgba(239,68,68,.3); }
+#toast.info { color: var(--accent);border-color: rgba(91,138,245,.3); }
+</style>
+</head>
+<body>
+<div id="shell">
+
+<!-- Titlebar -->
+<div id="titlebar">
+  <div id="o4logo">
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+      <rect x="1" y="1" width="7" height="7" rx="1.5" fill="#5b8af5"/>
+      <rect x="10" y="1" width="7" height="7" rx="1.5" fill="#8b5cf6"/>
+      <rect x="1" y="10" width="7" height="7" rx="1.5" fill="#22c55e"/>
+      <rect x="10" y="10" width="7" height="7" rx="1.5" fill="#f59e0b"/>
+    </svg>
+    <span>Office 4</span>
+  </div>
+  <input id="doc-name" value="未命名文件" spellcheck="false"/>
+  <div class="tb-sep"></div>
+  <div id="module-tabs">
+    <button class="mod-tab active" id="tab-sheet" onclick="switchModule('sheet')">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4">
+        <rect x="1" y="1" width="14" height="14" rx="1.5"/>
+        <line x1="1" y1="5" x2="15" y2="5"/><line x1="1" y1="9" x2="15" y2="9"/>
+        <line x1="5" y1="1" x2="5" y2="15"/><line x1="10" y1="1" x2="10" y2="15"/>
+      </svg>試算表
+    </button>
+    <button class="mod-tab" id="tab-slides" onclick="switchModule('slides')">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4">
+        <rect x="1" y="2" width="14" height="10" rx="1.5"/>
+        <line x1="5" y1="14" x2="11" y2="14"/><line x1="8" y1="12" x2="8" y2="14"/>
+      </svg>投影片
+    </button>
+  </div>
+  <div id="ws-area">
+    <div id="ws-dot"></div>
+    <span id="ws-label">connecting…</span>
+    <span id="user-pill"></span>
+  </div>
+</div>
+
+<!-- Toolbar 2 -->
+<div id="toolbar2">
+  <div id="tb-sheet-tools" style="display:flex;align-items:center;gap:6px;width:100%">
+    <button class="tb-btn" id="btn-add-rows">
+      <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><line x1="7" y1="2" x2="7" y2="12"/><line x1="2" y1="7" x2="12" y2="7"/></svg>增列
+    </button>
+    <button class="tb-btn danger" id="btn-clear-all">
+      <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="2,3 12,3"/><path d="M4,3V2a1,1,0,0,1,1-1h4a1,1,0,0,1,1,1V3"/><rect x="3" y="3" width="8" height="10" rx="1"/></svg>清除全部
+    </button>
+  </div>
+  <div id="tb-slide-tools" style="display:none;align-items:center;gap:6px;width:100%">
+    <button class="tb-btn" onclick="addText()">
+      <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4"><line x1="2" y1="4" x2="12" y2="4"/><line x1="7" y1="2" x2="7" y2="6"/><line x1="3" y1="8" x2="11" y2="8"/><line x1="4" y1="11" x2="10" y2="11"/></svg>文字
+    </button>
+    <button class="tb-btn" onclick="addShape('rect')">
+      <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="3" width="10" height="8" rx="1"/></svg>矩形
+    </button>
+    <button class="tb-btn" onclick="addShape('ellipse')">
+      <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4"><ellipse cx="7" cy="7" rx="5" ry="4"/></svg>橢圓
+    </button>
+    <button class="tb-btn" onclick="addShape('triangle')">
+      <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4"><polygon points="7,2 13,12 1,12"/></svg>三角形
+    </button>
+    <div class="tb-sep"></div>
+    <button class="tb-btn" onclick="startPresent()">
+      <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4"><polygon points="3,2 12,7 3,12"/></svg>播放
+    </button>
+    <button class="tb-btn danger" style="margin-left:auto" onclick="deleteCurrentSlide()">
+      <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4"><line x1="2" y1="2" x2="12" y2="12"/><line x1="12" y1="2" x2="2" y2="12"/></svg>刪除此頁
+    </button>
+  </div>
+</div>
+
+<!-- Main area -->
+<div id="main-area">
+
+  <!-- SPREADSHEET MODULE -->
+  <div id="app-sheet">
+    <div id="formula-bar">
+      <span id="cell-ref">A1</span>
+      <span id="fx-label">ƒx</span>
+      <input id="formula-input" placeholder="輸入值或公式，例: =SUM(A1:B5)" spellcheck="false"/>
+    </div>
+    <div id="grid-container">
+      <div id="grid-wrapper">
+        <div id="col-header-row"></div>
+        <div id="grid-body"></div>
+      </div>
+    </div>
+    <div id="statusline">
+      <div class="stat">位置 <span id="stat-pos">A1</span></div>
+      <div class="stat green">SUM <span id="stat-sum">—</span></div>
+      <div class="stat blue">AVG <span id="stat-avg">—</span></div>
+      <div class="stat">COUNT <span id="stat-count">—</span></div>
+    </div>
+  </div>
+
+  <!-- SLIDES MODULE -->
+  <div id="app-slides">
+    <div id="slides-sidebar">
+      <div id="slides-list-header">
+        <span>SLIDES</span>
+        <button id="btn-add-slide" onclick="addSlide()" title="新增投影片">
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6">
+            <line x1="6" y1="1" x2="6" y2="11"/><line x1="1" y1="6" x2="11" y2="6"/>
+          </svg>
+        </button>
+      </div>
+      <div id="slides-list"></div>
+    </div>
+
+    <div id="slides-main">
+      <div id="slides-canvas-wrap">
+        <div id="slide-canvas">
+          <div id="slide-canvas-bg"></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="slides-props">
+      <div class="props-section">
+        <div class="props-title">投影片背景</div>
+        <div class="prop-row">
+          <span class="prop-label">顏色</span>
+          <input type="color" class="prop-input" id="prop-bg-color" value="#0d1117" oninput="setBg(this.value)"/>
+        </div>
+        <div class="prop-btn-row">
+          <button class="prop-btn" onclick="setGradient('linear-gradient(135deg,#0d1117,#1a1e2a)')">深色</button>
+          <button class="prop-btn" onclick="setGradient('linear-gradient(135deg,#0f172a,#1e3a5f)')">海藍</button>
+          <button class="prop-btn" onclick="setGradient('linear-gradient(135deg,#1a0533,#3b0764)')">紫夢</button>
+          <button class="prop-btn" onclick="setGradient('#ffffff')">白色</button>
+        </div>
+      </div>
+
+      <div class="props-section" id="props-text" style="display:none">
+        <div class="props-title">文字屬性</div>
+        <div class="prop-row">
+          <span class="prop-label">字級</span>
+          <input type="number" class="prop-input" id="prop-font-size" value="24" min="8" max="200" style="width:60px" oninput="updateSelTextProp('font_size',+this.value)"/>
+        </div>
+        <div class="prop-row">
+          <span class="prop-label">顏色</span>
+          <input type="color" class="prop-input" id="prop-text-color" value="#e2e8f0" oninput="updateSelTextProp('color',this.value)"/>
+        </div>
+        <div class="prop-row">
+          <span class="prop-label">對齊</span>
+          <select class="prop-select" id="prop-text-align" onchange="updateSelTextProp('align',this.value)">
+            <option value="left">左</option><option value="center">中</option><option value="right">右</option>
+          </select>
+        </div>
+        <div class="prop-btn-row" style="margin-bottom:6px">
+          <button class="prop-btn" id="pbtn-bold"   onclick="toggleTextProp('font_bold')">粗體</button>
+          <button class="prop-btn" id="pbtn-italic" onclick="toggleTextProp('font_italic')">斜體</button>
+        </div>
+        <div class="prop-btn-row">
+          <button class="prop-btn danger" onclick="deleteSelected()">刪除元素</button>
+        </div>
+      </div>
+
+      <div class="props-section" id="props-shape" style="display:none">
+        <div class="props-title">形狀屬性</div>
+        <div class="prop-row">
+          <span class="prop-label">填色</span>
+          <input type="color" class="prop-input" id="prop-shape-fill" value="#5b8af5" oninput="updateSelShapeProp('fill',this.value)"/>
+        </div>
+        <div class="prop-row">
+          <span class="prop-label">邊框</span>
+          <input type="color" class="prop-input" id="prop-shape-stroke" value="#ffffff" oninput="updateSelShapeProp('stroke',this.value)"/>
+        </div>
+        <div class="prop-row">
+          <span class="prop-label">邊寬</span>
+          <input type="number" class="prop-input" id="prop-shape-sw" value="0" min="0" max="20" style="width:60px" oninput="updateSelShapeProp('stroke_width',+this.value)"/>
+        </div>
+        <div class="prop-btn-row">
+          <button class="prop-btn danger" onclick="deleteSelected()">刪除元素</button>
+        </div>
+      </div>
+
+      <div class="props-section" id="props-pos" style="display:none">
+        <div class="props-title">位置 / 尺寸</div>
+        <div class="prop-row">
+          <span class="prop-label">X</span>
+          <input type="number" class="prop-input" id="prop-x" style="width:60px" oninput="updateSelPos()"/>
+          <span class="prop-label">Y</span>
+          <input type="number" class="prop-input" id="prop-y" style="width:60px" oninput="updateSelPos()"/>
+        </div>
+        <div class="prop-row">
+          <span class="prop-label">W</span>
+          <input type="number" class="prop-input" id="prop-w" style="width:60px" oninput="updateSelPos()"/>
+          <span class="prop-label">H</span>
+          <input type="number" class="prop-input" id="prop-h" style="width:60px" oninput="updateSelPos()"/>
+        </div>
+      </div>
+
+      <div class="props-section">
+        <div class="props-title">備忘稿</div>
+        <textarea id="notes-area" placeholder="投影片備忘…" oninput="updateNotes(this.value)"></textarea>
+      </div>
+    </div>
+  </div>
+
+</div><!-- #main-area -->
+</div><!-- #shell -->
+
+<input id="cell-editor" type="text" spellcheck="false"/>
+
+<!-- Presenter overlay -->
+<div id="present-overlay">
+  <div id="present-canvas-wrap">
+    <canvas id="present-canvas"></canvas>
+  </div>
+  <div id="present-overlay-controls">
+    <button class="pctrl-btn" onclick="presentPrev()">◀</button>
+    <span id="present-slide-num">1 / 1</span>
+    <button class="pctrl-btn" onclick="presentNext()">▶</button>
+    <button class="pctrl-btn" onclick="endPresent()">✕ 結束</button>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+// ═══════════════════════════════════════════════════════
+//  CONFIG
+// ═══════════════════════════════════════════════════════
+const WS_URL   = 'ws://localhost:9001';
+const COLS     = 26;
+const COL_LBLS = Array.from({length:COLS},(_,i)=>String.fromCharCode(65+i));
+const SW = 920, SH = 517;   // slide logical size
+
+// ═══════════════════════════════════════════════════════
+//  STATE
+// ═══════════════════════════════════════════════════════
+let ws, myId;
+let currentModule = 'sheet';
+
+// Sheet
+let sheetData = {}, totalRows = 50, selR = 0, selC = 0, editing = false;
+
+// Slides
+let slides = [], curIdx = 0, selElId = null, selElType = null, presentIdx = 0;
+
+// ═══════════════════════════════════════════════════════
+//  MODULE SWITCH
+// ═══════════════════════════════════════════════════════
+function switchModule(m) {
+  currentModule = m;
+  document.getElementById('tab-sheet').classList.toggle('active', m === 'sheet');
+  document.getElementById('tab-slides').classList.toggle('active', m === 'slides');
+
+  const sheet  = document.getElementById('app-sheet');
+  const slides_ = document.getElementById('app-slides');
+  const tbSheet = document.getElementById('tb-sheet-tools');
+  const tbSlide = document.getElementById('tb-slide-tools');
+
+  if (m === 'sheet') {
+    sheet.style.display  = 'flex';
+    slides_.style.display = 'none';
+    tbSheet.style.display = 'flex';
+    tbSlide.style.display = 'none';
+  } else {
+    sheet.style.display  = 'none';
+    slides_.style.display = 'flex';
+    tbSheet.style.display = 'none';
+    tbSlide.style.display = 'flex';
+    renderSlides();
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+//  SPREADSHEET
+// ═══════════════════════════════════════════════════════
+function buildGrid() {
+  // col headers
+  const chr = document.getElementById('col-header-row');
+  chr.innerHTML = '';
+  const corner = document.createElement('div'); corner.className = 'corner'; chr.appendChild(corner);
+  for (let c = 0; c < COLS; c++) {
+    const h = document.createElement('div'); h.className = 'col-hdr'; h.id = `ch-${c}`;
+    h.textContent = COL_LBLS[c]; chr.appendChild(h);
+  }
+  // rows
+  const gb = document.getElementById('grid-body'); gb.innerHTML = '';
+  for (let r = 0; r < totalRows; r++) gb.appendChild(makeRow(r));
+}
+function makeRow(r) {
+  const row = document.createElement('div'); row.className = 'grid-row'; row.id = `row-${r}`;
+  const rh = document.createElement('div'); rh.className = 'row-hdr'; rh.id = `rh-${r}`;
+  rh.textContent = r + 1; row.appendChild(rh);
+  for (let c = 0; c < COLS; c++) row.appendChild(makeCell(r, c));
+  return row;
+}
+function makeCell(r, c) {
+  const el = document.createElement('div'); el.className = 'grid-cell'; el.id = `cell-${r}-${c}`;
+  el.dataset.r = r; el.dataset.c = c;
+  const s = document.createElement('span'); s.className = 'ct'; el.appendChild(s);
+  el.addEventListener('click', () => selectCell(r, c));
+  el.addEventListener('dblclick', () => startEdit(r, c));
+  return el;
+}
+function addGridRows(n) {
+  const gb = document.getElementById('grid-body');
+  for (let r = totalRows; r < totalRows + n; r++) gb.appendChild(makeRow(r));
+  totalRows += n;
+}
+function renderCell(r, c, cd) {
+  const el = document.getElementById(`cell-${r}-${c}`); if (!el) return;
+  el.className = 'grid-cell';
+  if (r === selR && c === selC) el.classList.add('selected');
+  const s = el.querySelector('.ct');
+  if (!cd || !cd.value) { s.textContent = ''; return; }
+  s.textContent = cd.value;
+  if (cd.value === '#ERR') el.classList.add('err');
+  else if (cd.type === 'formula') el.classList.add('formula');
+  else if (cd.type === 'number') el.classList.add('num');
+}
+function renderAllCells() {
+  for (let r = 0; r < totalRows; r++)
+    for (let c = 0; c < COLS; c++) renderCell(r, c, sheetData[`${r}:${c}`]);
+}
+function flashCell(r, c) {
+  const el = document.getElementById(`cell-${r}-${c}`); if (!el) return;
+  el.classList.remove('remote-flash'); void el.offsetWidth; el.classList.add('remote-flash');
+  setTimeout(() => el.classList.remove('remote-flash'), 700);
+}
+function selectCell(r, c) {
+  if (editing) commitEdit();
+  document.getElementById(`cell-${selR}-${selC}`)?.classList.remove('selected');
+  document.getElementById(`rh-${selR}`)?.classList.remove('active');
+  document.getElementById(`ch-${selC}`)?.classList.remove('active');
+  selR = r; selC = c;
+  document.getElementById(`cell-${r}-${c}`)?.classList.add('selected');
+  document.getElementById(`rh-${r}`)?.classList.add('active');
+  document.getElementById(`ch-${c}`)?.classList.add('active');
+  const ref = `${COL_LBLS[c]}${r+1}`;
+  document.getElementById('cell-ref').textContent = ref;
+  document.getElementById('stat-pos').textContent = ref;
+  const cd = sheetData[`${r}:${c}`];
+  document.getElementById('formula-input').value = cd ? (cd.formula || cd.value) : '';
+  updateStats();
+  document.getElementById(`cell-${r}-${c}`)?.scrollIntoView({block:'nearest',inline:'nearest'});
+}
+function updateStats() {
+  const nums = Object.values(sheetData).map(c => parseFloat(c.value)).filter(v => !isNaN(v));
+  if (!nums.length) {
+    document.getElementById('stat-sum').textContent = '—';
+    document.getElementById('stat-avg').textContent = '—';
+    document.getElementById('stat-count').textContent = '—';
+  } else {
+    const s = nums.reduce((a,b) => a+b, 0);
+    document.getElementById('stat-sum').textContent = fmtN(s);
+    document.getElementById('stat-avg').textContent = fmtN(s / nums.length);
+    document.getElementById('stat-count').textContent = nums.length;
+  }
+}
+function fmtN(v) { return Math.abs(v) >= 1e6 ? v.toExponential(2) : parseFloat(v.toFixed(4)).toString(); }
+
+function startEdit(r, c, key) {
+  if (editing) commitEdit(); editing = true;
+  const el = document.getElementById(`cell-${r}-${c}`); if (!el) return;
+  const rect = el.getBoundingClientRect();
+  const ce = document.getElementById('cell-editor');
+  ce.style.display = 'block';
+  ce.style.left = rect.left + 'px'; ce.style.top = rect.top + 'px';
+  ce.style.width = Math.max(rect.width, 120) + 'px'; ce.style.height = rect.height + 'px';
+  const cd = sheetData[`${r}:${c}`];
+  ce.value = key || (cd ? (cd.formula || cd.value) : '');
+  if (!key) ce.select(); else ce.setSelectionRange(ce.value.length, ce.value.length);
+  ce.focus();
+}
+function commitEdit() {
+  if (!editing) return; editing = false;
+  const ce = document.getElementById('cell-editor'); ce.style.display = 'none';
+  const val = ce.value;
+  if (!val) { wsSend({type:'clear_cell', row:selR, col:selC}); return; }
+  const isF = val.startsWith('=');
+  wsSend({type:'update_cell', row:selR, col:selC, value:isF?'':val, formula:isF?val:null});
+}
+function cancelEdit() { editing = false; document.getElementById('cell-editor').style.display = 'none'; }
+function moveGrid(dr, dc) {
+  selectCell(Math.max(0, Math.min(totalRows-1, selR+dr)), Math.max(0, Math.min(COLS-1, selC+dc)));
+}
+document.addEventListener('keydown', e => {
+  if (currentModule !== 'sheet') return;
+  if (editing) {
+    if (e.key === 'Enter')  { commitEdit(); moveGrid(1, 0); }
+    else if (e.key === 'Tab') { e.preventDefault(); commitEdit(); moveGrid(0, e.shiftKey?-1:1); }
+    else if (e.key === 'Escape') cancelEdit();
+    return;
+  }
+  switch (e.key) {
+    case 'ArrowUp':    e.preventDefault(); moveGrid(-1, 0); break;
+    case 'ArrowDown':  e.preventDefault(); moveGrid( 1, 0); break;
+    case 'ArrowLeft':  e.preventDefault(); moveGrid(0, -1); break;
+    case 'ArrowRight': e.preventDefault(); moveGrid(0,  1); break;
+    case 'Tab': e.preventDefault(); moveGrid(0, e.shiftKey?-1:1); break;
+    case 'Enter': case 'F2': startEdit(selR, selC); break;
+    case 'Delete': case 'Backspace': wsSend({type:'clear_cell', row:selR, col:selC}); break;
+    default: if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) startEdit(selR, selC, e.key);
+  }
+});
+document.getElementById('formula-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') {
+    const val = e.target.value; const isF = val.startsWith('=');
+    wsSend({type:'update_cell', row:selR, col:selC, value:isF?'':val, formula:isF?val:null});
+    e.target.blur();
+  }
+});
+document.getElementById('btn-add-rows').onclick  = () => wsSend({type:'add_rows', count:10});
+document.getElementById('btn-clear-all').onclick = () => confirm('確定清除所有資料？') && wsSend({type:'clear_all'});
+
+// ═══════════════════════════════════════════════════════
+//  SLIDES — HELPERS
+// ═══════════════════════════════════════════════════════
+const curSlide  = () => slides[curIdx] || null;
+const slideById = id => slides.find(s => s.id === id) || null;
+
+function addSlide()  { wsSend({type:'add_slide'}); }
+function deleteCurrentSlide() {
+  if (!curSlide()) return;
+  if (slides.length <= 1) { showToast('至少保留一張投影片','err'); return; }
+  wsSend({type:'delete_slide', slide_id:curSlide().id});
+}
+function selectSlide(i) {
+  curIdx = Math.max(0, Math.min(slides.length-1, i));
+  selElId = null; selElType = null;
+  wsSend({type:'set_current_slide', index:curIdx});
+  renderSlides();
+}
+function setBg(color) { if (curSlide()) wsSend({type:'set_background', slide_id:curSlide().id, background:color}); }
+function setGradient(g) {
+  document.getElementById('prop-bg-color').value = '#000000';
+  if (curSlide()) wsSend({type:'set_background', slide_id:curSlide().id, background:g});
+}
+function updateNotes(notes) { if (curSlide()) wsSend({type:'update_notes', slide_id:curSlide().id, notes}); }
+
+function addText() {
+  if (!curSlide()) return;
+  wsSend({type:'add_text', slide_id:curSlide().id, element:{
+    id:'', x:100, y:100, w:400, h:80, content:'雙擊編輯文字',
+    font_size:28, font_bold:false, font_italic:false,
+    color:'#e2e8f0', align:'left', z_index:10
+  }});
+}
+function addShape(shape) {
+  if (!curSlide()) return;
+  wsSend({type:'add_shape', slide_id:curSlide().id, element:{
+    id:'', x:120, y:120, w:200, h:140, shape,
+    fill:'#5b8af5', stroke:'rgba(0,0,0,0)', stroke_width:0, z_index:5
+  }});
+}
+function updateSelTextProp(key, val) {
+  if (!selElId || selElType !== 'text') return;
+  const s = curSlide(); if (!s) return;
+  const t = s.texts.find(t => t.id === selElId); if (!t) return;
+  t[key] = val;
+  wsSend({type:'update_text', slide_id:s.id, element:{...t}});
+  renderCanvas(); syncProps();
+}
+function toggleTextProp(key) {
+  if (!selElId || selElType !== 'text') return;
+  const s = curSlide(); if (!s) return;
+  const t = s.texts.find(t => t.id === selElId); if (!t) return;
+  t[key] = !t[key];
+  wsSend({type:'update_text', slide_id:s.id, element:{...t}});
+  renderCanvas(); syncProps();
+}
+function updateSelShapeProp(key, val) {
+  if (!selElId || selElType !== 'shape') return;
+  const s = curSlide(); if (!s) return;
+  const sh = s.shapes.find(sh => sh.id === selElId); if (!sh) return;
+  sh[key] = val;
+  wsSend({type:'update_shape', slide_id:s.id, element:{...sh}});
+  renderCanvas();
+}
+function updateSelPos() {
+  if (!selElId) return;
+  const s = curSlide(); if (!s) return;
+  const x=+document.getElementById('prop-x').value, y=+document.getElementById('prop-y').value;
+  const w=+document.getElementById('prop-w').value, h=+document.getElementById('prop-h').value;
+  if (selElType === 'text') {
+    const t = s.texts.find(t => t.id === selElId); if (!t) return;
+    Object.assign(t, {x,y,w,h});
+    wsSend({type:'update_text', slide_id:s.id, element:{...t}});
+  } else if (selElType === 'shape') {
+    const sh = s.shapes.find(sh => sh.id === selElId); if (!sh) return;
+    Object.assign(sh, {x,y,w,h});
+    wsSend({type:'update_shape', slide_id:s.id, element:{...sh}});
+  }
+  renderCanvas();
+}
+function deleteSelected() {
+  if (!selElId) return;
+  const s = curSlide(); if (!s) return;
+  if (selElType === 'text')  wsSend({type:'delete_text',  slide_id:s.id, element_id:selElId});
+  if (selElType === 'shape') wsSend({type:'delete_shape', slide_id:s.id, element_id:selElId});
+  if (selElType === 'image') wsSend({type:'delete_image', slide_id:s.id, element_id:selElId});
+  selElId = null; selElType = null;
+  renderCanvas(); syncProps();
+}
+
+// ═══════════════════════════════════════════════════════
+//  SLIDES — RENDER
+// ═══════════════════════════════════════════════════════
+function renderSlides() { renderSidebar(); renderCanvas(); syncProps(); }
+
+function renderSidebar() {
+  const list = document.getElementById('slides-list'); list.innerHTML = '';
+  slides.forEach((s, i) => {
+    const div = document.createElement('div');
+    div.className = 'slide-thumb' + (i === curIdx ? ' active' : '');
+    div.onclick = () => selectSlide(i);
+
+    const cv = document.createElement('canvas'); cv.width = 320; cv.height = 180;
+    drawToCanvas(s, cv, 320, 180); div.appendChild(cv);
+
+    const num = document.createElement('div'); num.className = 'slide-num'; num.textContent = i+1; div.appendChild(num);
+    if (slides.length > 1) {
+      const del = document.createElement('button'); del.className = 'slide-del'; del.textContent = '✕';
+      del.onclick = e => { e.stopPropagation(); wsSend({type:'delete_slide', slide_id:s.id}); };
+      div.appendChild(del);
+    }
+    list.appendChild(div);
+  });
+}
+
+function drawToCanvas(slide, cv, W, H) {
+  const ctx = cv.getContext('2d');
+  const sx = W / SW, sy = H / SH;
+  // background
+  const bg = slide.background || '#0d1117';
+  if (bg.startsWith('linear-gradient')) {
+    const m = bg.match(/linear-gradient\(([^,]+),\s*([^,]+),\s*([^)]+)\)/);
+    if (m) {
+      const a = parseInt(m[1]) || 135, r = a * Math.PI / 180;
+      const grd = ctx.createLinearGradient(W/2-Math.cos(r)*W/2, H/2-Math.sin(r)*H/2, W/2+Math.cos(r)*W/2, H/2+Math.sin(r)*H/2);
+      grd.addColorStop(0, m[2].trim()); grd.addColorStop(1, m[3].trim());
+      ctx.fillStyle = grd;
+    } else { ctx.fillStyle = '#0d1117'; }
+  } else { ctx.fillStyle = bg; }
+  ctx.fillRect(0, 0, W, H);
+
+  // shapes
+  slide.shapes.forEach(sh => {
+    ctx.save();
+    ctx.fillStyle = sh.fill; ctx.strokeStyle = sh.stroke; ctx.lineWidth = sh.stroke_width * sx;
+    const x=sh.x*sx, y=sh.y*sy, w=sh.w*sx, h=sh.h*sy;
+    ctx.beginPath();
+    if (sh.shape === 'rect')     ctx.rect(x, y, w, h);
+    else if (sh.shape === 'ellipse') ctx.ellipse(x+w/2, y+h/2, w/2, h/2, 0, 0, Math.PI*2);
+    else if (sh.shape === 'triangle') { ctx.moveTo(x+w/2,y); ctx.lineTo(x+w,y+h); ctx.lineTo(x,y+h); ctx.closePath(); }
+    ctx.fill(); if (sh.stroke_width > 0) ctx.stroke();
+    ctx.restore();
+  });
+  // texts
+  slide.texts.forEach(t => {
+    ctx.save();
+    const fs = Math.max(1, Math.round(t.font_size * sy));
+    ctx.font = `${t.font_italic?'italic ':''} ${t.font_bold?'bold ':''} ${fs}px Geist,sans-serif`;
+    ctx.fillStyle = t.color; ctx.textAlign = t.align; ctx.textBaseline = 'top';
+    const tx = t.align==='center' ? (t.x+t.w/2)*sx : t.align==='right' ? (t.x+t.w)*sx : t.x*sx;
+    let yy = t.y*sy + 4;
+    t.content.split('\n').forEach(line => { ctx.fillText(line, tx, yy, t.w*sx); yy += fs*1.3; });
+    ctx.restore();
+  });
+}
+
+function renderCanvas() {
+  const cv = document.getElementById('slide-canvas');
+  // remove old elements
+  Array.from(cv.querySelectorAll('.slide-el')).forEach(e => e.remove());
+  const s = curSlide(); if (!s) return;
+
+  // background
+  document.getElementById('slide-canvas-bg').style.background = s.background || '#0d1117';
+  document.getElementById('notes-area').value = s.notes || '';
+
+  s.shapes.forEach(sh => cv.appendChild(makeDomShape(sh, s.id)));
+  s.texts.forEach(t   => cv.appendChild(makeDomText(t, s.id)));
+}
+
+function makeDomShape(sh, sid) {
+  const el = document.createElement('div');
+  el.className = 'slide-el' + (sh.id === selElId ? ' selected' : '');
+  el.id = `el-${sh.id}`;
+  el.style.cssText = `left:${sh.x}px;top:${sh.y}px;width:${sh.w}px;height:${sh.h}px;z-index:${sh.z_index}`;
+
+  const svg = document.createElementNS('http://www.w3.org/2000/svg','svg');
+  svg.setAttribute('width','100%'); svg.setAttribute('height','100%');
+  svg.style.cssText = 'position:absolute;inset:0;overflow:visible';
+
+  if (sh.shape === 'rect') {
+    const r = document.createElementNS('http://www.w3.org/2000/svg','rect');
+    r.setAttribute('x','0'); r.setAttribute('y','0');
+    r.setAttribute('width',sh.w); r.setAttribute('height',sh.h);
+    r.setAttribute('fill',sh.fill); r.setAttribute('stroke',sh.stroke); r.setAttribute('stroke-width',sh.stroke_width);
+    svg.appendChild(r);
+  } else if (sh.shape === 'ellipse') {
+    const c = document.createElementNS('http://www.w3.org/2000/svg','ellipse');
+    c.setAttribute('cx',sh.w/2); c.setAttribute('cy',sh.h/2);
+    c.setAttribute('rx',sh.w/2); c.setAttribute('ry',sh.h/2);
+    c.setAttribute('fill',sh.fill); c.setAttribute('stroke',sh.stroke); c.setAttribute('stroke-width',sh.stroke_width);
+    svg.appendChild(c);
+  } else if (sh.shape === 'triangle') {
+    const p = document.createElementNS('http://www.w3.org/2000/svg','polygon');
+    p.setAttribute('points',`${sh.w/2},0 ${sh.w},${sh.h} 0,${sh.h}`);
+    p.setAttribute('fill',sh.fill); p.setAttribute('stroke',sh.stroke); p.setAttribute('stroke-width',sh.stroke_width);
+    svg.appendChild(p);
+  }
+  el.appendChild(svg);
+
+  const border = document.createElement('div'); border.className = 'el-border'; el.appendChild(border);
+  if (sh.id === selElId) addHandles(el, sh, 'shape', sid);
+  el.addEventListener('mousedown', e => { e.stopPropagation(); selElId=sh.id; selElType='shape'; renderCanvas(); syncProps(); startDrag(e,sh,'shape',sid); });
+  return el;
+}
+
+function makeDomText(t, sid) {
+  const el = document.createElement('div');
+  el.className = 'slide-el' + (t.id === selElId ? ' selected' : '');
+  el.id = `el-${t.id}`;
+  el.style.cssText = `left:${t.x}px;top:${t.y}px;width:${t.w}px;height:${t.h}px;z-index:${t.z_index}`;
+
+  const content = document.createElement('div');
+  content.className = 'slide-text-content';
+  content.style.cssText = `font-size:${t.font_size}px;color:${t.color};font-weight:${t.font_bold?'bold':'400'};font-style:${t.font_italic?'italic':'normal'};text-align:${t.align}`;
+  content.textContent = t.content;
+  el.appendChild(content);
+
+  const border = document.createElement('div'); border.className = 'el-border'; el.appendChild(border);
+  if (t.id === selElId) addHandles(el, t, 'text', sid);
+
+  el.addEventListener('mousedown', e => { e.stopPropagation(); selElId=t.id; selElType='text'; renderCanvas(); syncProps(); startDrag(e,t,'text',sid); });
+  el.addEventListener('dblclick', e => { e.stopPropagation(); startTextEdit(t, sid, el, content); });
+  return el;
+}
+
+function startTextEdit(t, sid, elDiv, contentDiv) {
+  contentDiv.style.visibility = 'hidden';
+  const ta = document.createElement('textarea');
+  ta.value = t.content;
+  ta.style.cssText = `position:absolute;inset:0;background:rgba(0,0,0,.35);border:none;outline:none;resize:none;color:${t.color};font-size:${t.font_size}px;font-weight:${t.font_bold?'bold':'400'};font-style:${t.font_italic?'italic':'normal'};text-align:${t.align};padding:4px;width:100%;height:100%;font-family:Geist,sans-serif;line-height:1.3`;
+  elDiv.appendChild(ta); ta.focus(); ta.select();
+  const commit = () => {
+    t.content = ta.value;
+    wsSend({type:'update_text', slide_id:sid, element:{...t}});
+    ta.remove(); contentDiv.style.visibility = '';
+    contentDiv.textContent = t.content;
+  };
+  ta.addEventListener('blur', commit);
+  ta.addEventListener('keydown', e => { if (e.key === 'Escape') { ta.remove(); contentDiv.style.visibility = ''; } });
+}
+
+function addHandles(el, data, type, sid) {
+  ['tl','tr','bl','br'].forEach(pos => {
+    const h = document.createElement('div'); h.className = `resize-handle ${pos}`;
+    h.addEventListener('mousedown', e => { e.stopPropagation(); startResize(e, data, type, sid, pos); });
+    el.appendChild(h);
+  });
+}
+
+// ── Drag & Resize ──────────────────────────────────────
+function startDrag(e, data, type, sid) {
+  const ox=data.x, oy=data.y, sx_=e.clientX, sy_=e.clientY;
+  const onMove = mv => {
+    data.x = Math.round(ox + mv.clientX - sx_);
+    data.y = Math.round(oy + mv.clientY - sy_);
+    const dom = document.getElementById(`el-${data.id}`);
+    if (dom) { dom.style.left=data.x+'px'; dom.style.top=data.y+'px'; }
+    syncPosProp(data);
+  };
+  const onUp = () => {
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+    wsSend({type: type==='text'?'update_text':'update_shape', slide_id:sid, element:{...data}});
+  };
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+}
+
+function startResize(e, data, type, sid, pos) {
+  e.preventDefault();
+  const ox=data.x, oy=data.y, ow=data.w, oh=data.h, sx_=e.clientX, sy_=e.clientY;
+  const onMove = mv => {
+    const dx=mv.clientX-sx_, dy=mv.clientY-sy_;
+    if (pos==='br') { data.w=Math.max(30,ow+dx); data.h=Math.max(20,oh+dy); }
+    if (pos==='bl') { data.x=ox+dx; data.w=Math.max(30,ow-dx); data.h=Math.max(20,oh+dy); }
+    if (pos==='tr') { data.w=Math.max(30,ow+dx); data.y=oy+dy; data.h=Math.max(20,oh-dy); }
+    if (pos==='tl') { data.x=ox+dx; data.y=oy+dy; data.w=Math.max(30,ow-dx); data.h=Math.max(20,oh-dy); }
+    const dom=document.getElementById(`el-${data.id}`);
+    if (dom) { dom.style.left=data.x+'px'; dom.style.top=data.y+'px'; dom.style.width=data.w+'px'; dom.style.height=data.h+'px'; }
+    syncPosProp(data);
+  };
+  const onUp = () => {
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+    wsSend({type: type==='text'?'update_text':'update_shape', slide_id:sid, element:{...data}});
+    renderCanvas();
+  };
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+}
+
+document.getElementById('slide-canvas').addEventListener('mousedown', e => {
+  if (e.target === document.getElementById('slide-canvas') || e.target === document.getElementById('slide-canvas-bg')) {
+    selElId = null; selElType = null; renderCanvas(); syncProps();
+  }
+});
+
+// ── Props panel ────────────────────────────────────────
+function syncProps() {
+  document.getElementById('props-text').style.display  = 'none';
+  document.getElementById('props-shape').style.display = 'none';
+  document.getElementById('props-pos').style.display   = 'none';
+  if (!selElId || !curSlide()) return;
+  if (selElType === 'text') {
+    const t = curSlide().texts.find(t => t.id === selElId); if (!t) return;
+    document.getElementById('props-text').style.display = 'block';
+    document.getElementById('props-pos').style.display  = 'block';
+    document.getElementById('prop-font-size').value = t.font_size;
+    document.getElementById('prop-text-color').value = t.color;
+    document.getElementById('prop-text-align').value = t.align;
+    document.getElementById('pbtn-bold').classList.toggle('active', t.font_bold);
+    document.getElementById('pbtn-italic').classList.toggle('active', t.font_italic);
+    syncPosProp(t);
+  } else if (selElType === 'shape') {
+    const sh = curSlide().shapes.find(sh => sh.id === selElId); if (!sh) return;
+    document.getElementById('props-shape').style.display = 'block';
+    document.getElementById('props-pos').style.display   = 'block';
+    document.getElementById('prop-shape-fill').value   = sh.fill.startsWith('#') ? sh.fill : '#5b8af5';
+    document.getElementById('prop-shape-stroke').value = sh.stroke.startsWith('#') ? sh.stroke : '#ffffff';
+    document.getElementById('prop-shape-sw').value = sh.stroke_width;
+    syncPosProp(sh);
+  }
+}
+function syncPosProp(d) {
+  document.getElementById('prop-x').value = Math.round(d.x);
+  document.getElementById('prop-y').value = Math.round(d.y);
+  document.getElementById('prop-w').value = Math.round(d.w);
+  document.getElementById('prop-h').value = Math.round(d.h);
+}
+
+// ═══════════════════════════════════════════════════════
+//  PRESENTER
+// ═══════════════════════════════════════════════════════
+function startPresent() {
+  presentIdx = curIdx;
+  document.getElementById('present-overlay').classList.add('show');
+  renderPresent();
+  document.addEventListener('keydown', onPresentKey);
+}
+function endPresent() {
+  document.getElementById('present-overlay').classList.remove('show');
+  document.removeEventListener('keydown', onPresentKey);
+}
+function onPresentKey(e) {
+  if (e.key==='ArrowRight'||e.key==='ArrowDown'||e.key===' ') presentNext();
+  else if (e.key==='ArrowLeft'||e.key==='ArrowUp') presentPrev();
+  else if (e.key==='Escape') endPresent();
+}
+function presentNext() { presentIdx = Math.min(slides.length-1, presentIdx+1); renderPresent(); }
+function presentPrev() { presentIdx = Math.max(0, presentIdx-1); renderPresent(); }
+function renderPresent() {
+  const s = slides[presentIdx]; if (!s) return;
+  document.getElementById('present-slide-num').textContent = `${presentIdx+1} / ${slides.length}`;
+  const cv = document.getElementById('present-canvas');
+  // size to viewport maintaining 16:9
+  const vw = window.innerWidth, vh = window.innerHeight;
+  let w = vw, h = vw * SH / SW;
+  if (h > vh) { h = vh; w = vh * SW / SH; }
+  cv.width = SW; cv.height = SH;
+  cv.style.width = w + 'px'; cv.style.height = h + 'px';
+  drawToCanvas(s, cv, SW, SH);
+}
+
+// ═══════════════════════════════════════════════════════
+//  WEBSOCKET
+// ═══════════════════════════════════════════════════════
+function wsSend(obj) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
+
+function connect() {
+  const dot = document.getElementById('ws-dot'), lbl = document.getElementById('ws-label');
+  dot.className = ''; lbl.textContent = 'connecting…';
+  ws = new WebSocket(WS_URL);
+  ws.onopen  = () => { dot.className='on'; lbl.textContent='connected'; showToast('連線成功','ok'); };
+  ws.onclose = () => {
+    dot.className='err'; lbl.textContent='disconnected';
+    document.getElementById('user-pill').style.display='none';
+    showToast('連線中斷，3s 後重連','err');
+    setTimeout(connect, 3000);
+  };
+  ws.onmessage = ({data}) => { try { handle(JSON.parse(data)); } catch(e) { console.error(e); } };
+}
+
+function handle(msg) {
+  switch (msg.type) {
+    // Sheet
+    case 'state_snapshot':
+      myId = msg.client_id;
+      sheetData = msg.state.cells || {};
+      document.getElementById('doc-name').value = msg.state.name || '試算表';
+      if (msg.state.rows > totalRows) addGridRows(msg.state.rows - totalRows);
+      renderAllCells(); selectCell(0, 0);
+      setPill(msg.client_count); break;
+    case 'cell_updated':
+      sheetData[`${msg.row}:${msg.col}`] = msg.cell;
+      renderCell(msg.row, msg.col, msg.cell);
+      if (msg.client_id !== myId) flashCell(msg.row, msg.col);
+      if (msg.row===selR && msg.col===selC) document.getElementById('formula-input').value = msg.cell.formula||msg.cell.value;
+      updateStats(); break;
+    case 'cell_cleared':
+      delete sheetData[`${msg.row}:${msg.col}`];
+      renderCell(msg.row, msg.col, null);
+      if (msg.row===selR && msg.col===selC) document.getElementById('formula-input').value = '';
+      updateStats(); break;
+    case 'all_cleared':
+      sheetData = {}; renderAllCells(); updateStats(); showToast('已清除全部','info'); break;
+    case 'rows_added':
+      if (msg.new_rows > totalRows) addGridRows(msg.new_rows - totalRows); break;
+
+    // Slides
+    case 'slides_snapshot':
+      slides = msg.state.slides || [];
+      curIdx  = msg.state.current_slide || 0;
+      setPill(msg.client_count);
+      if (currentModule === 'slides') renderSlides(); break;
+    case 'slide_added':
+      slides.push(msg.slide); curIdx = slides.length - 1;
+      if (currentModule === 'slides') renderSlides(); break;
+    case 'slide_deleted':
+      slides = slides.filter(s => s.id !== msg.slide_id);
+      curIdx = Math.min(curIdx, Math.max(0, slides.length-1));
+      if (currentModule === 'slides') renderSlides(); break;
+    case 'background_set':
+      { const s=slideById(msg.slide_id); if(s) s.background=msg.background; }
+      if (currentModule==='slides') renderSlides(); break;
+    case 'current_slide_set':
+      curIdx = msg.index;
+      if (currentModule==='slides') renderSlides(); break;
+    case 'notes_updated':
+      { const s=slideById(msg.slide_id); if(s) s.notes=msg.notes; }
+      if (currentModule==='slides' && curSlide()?.id===msg.slide_id)
+        document.getElementById('notes-area').value=msg.notes; break;
+    case 'text_added':
+      { const s=slideById(msg.slide_id); if(s){s.texts.push(msg.element);selElId=msg.element.id;selElType='text';} }
+      if (currentModule==='slides') renderSlides(); break;
+    case 'text_updated':
+      { const s=slideById(msg.slide_id); if(s){const i=s.texts.findIndex(t=>t.id===msg.element.id);if(i>=0)s.texts[i]=msg.element;} }
+      if (currentModule==='slides') renderSlides(); break;
+    case 'text_deleted':
+      { const s=slideById(msg.slide_id); if(s) s.texts=s.texts.filter(t=>t.id!==msg.element_id); }
+      if (selElId===msg.element_id){selElId=null;selElType=null;}
+      if (currentModule==='slides') renderSlides(); break;
+    case 'shape_added':
+      { const s=slideById(msg.slide_id); if(s){s.shapes.push(msg.element);selElId=msg.element.id;selElType='shape';} }
+      if (currentModule==='slides') renderSlides(); break;
+    case 'shape_updated':
+      { const s=slideById(msg.slide_id); if(s){const i=s.shapes.findIndex(sh=>sh.id===msg.element.id);if(i>=0)s.shapes[i]=msg.element;} }
+      if (currentModule==='slides') renderSlides(); break;
+    case 'shape_deleted':
+      { const s=slideById(msg.slide_id); if(s) s.shapes=s.shapes.filter(sh=>sh.id!==msg.element_id); }
+      if (selElId===msg.element_id){selElId=null;selElType=null;}
+      if (currentModule==='slides') renderSlides(); break;
+    case 'image_added':
+    case 'image_updated':
+    case 'image_deleted':
+      // image support placeholder
+      if (currentModule==='slides') renderSlides(); break;
+
+    case 'client_joined':
+      setPill(msg.client_count);
+      if (msg.client_id !== myId) showToast('有使用者加入','info'); break;
+    case 'client_left':
+      setPill(msg.client_count); showToast('有使用者離開','info'); break;
+  }
+}
+function setPill(n) {
+  const p=document.getElementById('user-pill'); p.style.display='inline';
+  p.textContent = n===1 ? '1 user' : `${n} users`;
+}
+
+// ═══════════════════════════════════════════════════════
+//  TOAST
+// ═══════════════════════════════════════════════════════
+let toastT;
+function showToast(msg, type='info') {
+  const t=document.getElementById('toast'); t.textContent=msg; t.className=`show ${type}`;
+  clearTimeout(toastT); toastT=setTimeout(()=>t.className='', 2400);
+}
+
+// ═══════════════════════════════════════════════════════
+//  INIT
+// ═══════════════════════════════════════════════════════
+buildGrid();
+connect();
+selectCell(0,0);
+</script>
+</body>
+</html>

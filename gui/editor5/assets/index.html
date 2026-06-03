@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Dioxus Editor5</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body, #editor { height: 100%; width: 100%; overflow: hidden; }
+  </style>
+</head>
+<body>
+  <div id="editor"></div>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco/0.45.0/min/vs/loader.min.js"></script>
+  <script>
+    require.config({ paths: { 'vs': 'https://cdnjs.cloudflare.com/ajax/libs/monaco/0.45.0/min/vs' } });
+    require(['vs/editor/editor.main'], function () {
+      const editor = monaco.editor.create(document.getElementById('editor'), {
+        value: 'fn main() {\n    println!("Hello, world!");\n}',
+        language: 'rust',
+        theme: 'vs-dark',
+        fontSize: 14,
+        automaticLayout: true,
+      });
+
+      // Send content to parent when changed
+      editor.onDidChangeModelContent(() => {
+        const content = editor.getValue();
+        window.parent.postMessage({ type: 'content', value: content }, '*');
+      });
+
+      // Receive commands from parent
+      window.addEventListener('message', (event) => {
+        if (event.data && event.data.command === 'setContent') {
+          editor.setValue(event.data.value);
+        }
+      });
+
+      // Notify ready
+      window.parent.postMessage({ type: 'ready' }, '*');
+    });
+  </script>
+</body>
+</html>

@@ -1,27 +1,33 @@
 # computer4
 
-自製電腦系統 monorepo。每個子目錄都是**獨立的 Rust crate**（根目錄無 Cargo workspace）。僅能個別建置/測試。
+自製電腦系統 monorepo。每個子目錄都是獨立的 Rust crate（根目錄無 Cargo workspace）。僅能個別建置/測試。
 
-## 建置與測試
+## How to Investigate
 
-```sh
-cargo build              # 當前 crate（永不 --workspace）
-cargo test               # 當前 crate
-cargo run                # 有 main.rs 者可用
-./test.sh                # 多數 crate 用此腳本（build + test）
-./run.sh                 # GUI/媒體 crate 經常用此腳本
-```
+Read the highest-value sources first:  
+- `README*`, root manifests, workspace config, lockfiles  
+- build, test, lint, formatter, typecheck, and codegen config  
+- CI workflows and pre-commit / task runner config  
+- existing instruction files (`AGENTS.md`, `CLAUDE.md`, `.cursor/rules/`, `.cursorrules`, `.github/copilot-instructions.md`)  
+- repo-local OpenCode config such as `opencode.json`
 
-無 Cargo 的獨立 `rustc` crate：
-```sh
-cd compiler/py4 && rustc py4.rs -o py4 && ./py4
-cd tool/regex4 && rustc regex4.rs -o regex4 && ./regex4
-```
+If architecture is still unclear after reading config and docs, inspect a small number of representative code files to find the real entrypoints, package boundaries, and execution flow. Prefer reading the files that explain how the system is wired together over random leaf files.
 
-提交/推送：
-```sh
-./git.sh <msg> <branch>  # git add . && commit -m "$msg-$branch" && push
-```
+## What to extract
+
+Look for the highest-signal facts for an agent working in this repo:
+- exact developer commands, especially non-obvious ones
+- how to run a single test, a single package, or a focused verification step
+- required command order when it matters, such as `lint -> typecheck -> test`
+- monorepo or multi-package boundaries, ownership of major directories, and the real app/library entrypoints
+- framework or toolchain quirks: generated code, migrations, codegen, build artifacts, special env loading, dev servers, infra deploy flow
+- repo-specific style or workflow conventions that differ from defaults
+- testing quirks: fixtures, integration test prerequisites, snapshot workflows, required services, flaky or expensive suites
+- important constraints from existing instruction files worth preserving
+
+## Questions
+
+Ask the user only if the repo cannot answer something important. Use the `question` tool for one short batch at most.
 
 ## Monorepo 地圖
 
@@ -51,7 +57,6 @@ cd tool/regex4 && rustc regex4.rs -o regex4 && ./regex4
 | `gui/win4/` | win4 | 2021 | 視窗管理器 (eframe/egui) |
 | `gui/game4/` | game4 | 2021 | 遊戲框架 — WebSocket server + JS 前端 |
 | **web/** | | | |
-| `web/browser4/` | browser4 | 2021 | 瀏覽器 (eframe + boa_engine JS) |
 | `web/browser5/` | browser5 | 2021 | 瀏覽器，使用自製 xdom4/js4 — 區域路徑依賴 |
 | `web/md4browser/` | md4browser | 2021 | Markdown 瀏覽器 (eframe) |
 | `web/xdom4/` | xdom4 | 2021 | XML/DOM 函式庫（CSS 選擇器） |
@@ -59,24 +64,30 @@ cd tool/regex4 && rustc regex4.rs -o regex4 && ./regex4
 | **media/** | | | |
 | `media/jpeg/` | jpeg | 2021 | JPEG 編解碼器 (PPM↔JPEG) |
 | `media/mp3/` | mpeg_codec | 2021 | MP3 解碼/編碼器 |
-| `media/mpeg1/` | mpeg1_decoder | 2021 | MPEG-1 視訊解碼器（僅 stdlib） |
 | `media/aplayer4/` | aplayer4 | 2024 | 音訊播放器 (rodio + crossterm TUI) |
 | **eda/** | | | |
 | `eda/verilog2rust/` | verilog2rust | 2021 | Verilog → Rust (rhdl) 轉換器 + rhdl 硬體描述函式庫 |
-| `eda/ic4/` | ic4 | 2021 | IC 設計 — 合成、實體設計、視覺化 |
-| `eda/synthesis/` | synthesis | 2021 | 邏輯合成（HDL→netlist→optimizer→techmap） |
-| `eda/ruspice/` | ruspice | 2021 | SPICE-like 類比電路模擬器 |
 | **os/** | | | |
 | `os/mini-riscv-os/` | mini-riscv-os | 2021 | 最小 RISC-V OS 核心（`#![no_std]` staticlib，QEMU） |
-| `os/rvboard4/` | rvboard4 | 2021 | RISC-V BSP + `os/rvboard4/simulator/` (SDL2 GUI 類比) |
-| `os/xv6-rust-octopus/` | *workspace* | 2024 | xv6 移植：核心 + 使用者 + mkfs（nightly，QEMU） |
-| `os/xv7-rust-octopus/` | *workspace* | 2024 | xv7 + 網路支援（TAP 設備） |
-| `os/xv8-rust-posix/` | xv8 (kernel) + user | 2021 | POSIX 相容 xv7 進化版（nightly，QEMU）。另有 [AGENTS.md](os/xv8-rust-posix/AGENTS.md) |
+| `os/xv8-rust-posix/` | xv8 (kernel) + user | 2021 | POSIX 相容 xv7 進化版（nightly，QEMU） |
 | `os/posix/tools/` | tools | 2021 | **124+ POSIX 工具**（`sh`、`ls`、`diff`、`grep`、`awk` 等）。134 binary targets，214 tests。另有 [_doc/](os/posix/_doc/) 下多版本文件 |
 | **tool/** | | | |
-| `tool/lz4/` | lz4 | 2024 | LZ4 壓縮 |
-| `tool/regex4/` | (standalone) | — | 正規表達式引擎 — `regex4.rs` |
 | `tool/vi4/` | vi4 | 2021 | 終端機文字編輯器 (crossterm) |
+
+## 建置與測試
+
+`rustc4` 寫出 `.ir` → `lli4` 直譯 `.ir`
+
+| 範例 | 說明 |
+|---|---|
+| `cargo build` | 當前 crate（永不 --workspace） |
+| `cargo test` | 當前 crate |
+| `cargo run` | 有 `main.rs` 者可用 |
+| `./test.sh` | 多數 crate 用此腳本（build + test） |
+| `./run.sh` | GUI/媒體 crate 經常用此腳本 |
+| `./git.sh <msg> <branch>` | git add . && commit -m "$msg-$branch" && push |
+| `cd compiler/py4 && rustc py4.rs -o py4 && ./py4` | 無 Cargo 的獨立 `rustc` crate |
+| `cd tool/regex4 && rustc regex4.rs -o regex4 && ./regex4` | 無 Cargo 的獨立 `rustc` crate |
 
 ## 慣例
 
@@ -84,20 +95,8 @@ cd tool/regex4 && rustc regex4.rs -o regex4 && ./regex4
 - **例外：** `os/xv6-rust-octopus/` 和 `os/xv7-rust-octopus/` 各為 Cargo workspace（核心 + 使用者 + mkfs）
 - Edition：多數 = 2021；`sql4`、`btree`、`patricia-trie`、`redblacktree`、`lz4`、`aplayer4` + octopos 核心/使用者/mkfs = 2024
 - 原始碼註解使用繁體中文
-- `#![allow(dead_code)]` 位於 `math4/src/lib.rs` 和 `db6/src/lib.rs`
 - 無 CI/CD，無根目錄 `rust-toolchain.toml`（octopos 內部各自鎖定 nightly）
 - `rustc` 獨立 crate：`compiler/py4/`（`py4.rs` + `lib4.rs`）、`tool/regex4/`（`regex4.rs`）
-
-## 編譯器管線
-
-`rustc4` 寫出 `.ir` → `lli4` 直譯 `.ir`
-
-## browser5 注意事項
-
-- 區域路徑依賴：`xdom4 = { path = "../xdom4" }`、`js4 = { path = "../js4" }`
-- `run.sh`：`cargo test && RUST_BACKTRACE=1 cargo run`
-- 使用 `scraper` 解析 HTML；`JsRuntime` 包裹 `js4` 執行 JS
-- DOM API：`document.getElementById()`、`element.innerText`（可讀寫）
 
 ## Wiki 參考
 
@@ -108,17 +107,3 @@ cd tool/regex4 && rustc regex4.rs -o regex4 && ./regex4
 - [`math4/AGENTS.md`](math4/AGENTS.md) — NaN 處理、多項式升冪順序、R/JS 命名
 - [`database/db6/AGENTS.md`](database/db6/AGENTS.md) — 架構、REPL 指令、引擎 trait
 - [`database/redblacktree/AGENTS.md`](database/redblacktree/AGENTS.md) — CLI 用法、結構
-
-## os/posix/tools/ 說明
-
-此crate包含**124+ POSIX.1-2008工具**，原始碼在 `tools/src/bin/`（134個`.rs`檔），所有binary targets註冊於 `tools/Cargo.toml`。
-
-### 建置與測試
-```sh
-cd os/posix/tools && cargo build && cargo test
-```
-
-### 文件
-- `_doc/plan.md` — 完整專案規劃
-- `_doc/todo2.md` — 剩餘工具狀態
-- `_doc/v0.x.md` — 各版本詳細文件（v0.8 ∼ v0.19）

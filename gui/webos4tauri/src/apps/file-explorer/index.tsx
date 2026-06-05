@@ -51,8 +51,10 @@ export default function FileExplorer() {
   const initPath = useCallback(async () => {
     try {
       const dir = await documentDir()
+      if (!dir) throw new Error('documentDir returned empty path')
       await loadDirectory(dir)
     } catch (err) {
+      console.error('initPath error:', err)
       setError(String(err))
     }
   }, [loadDirectory])

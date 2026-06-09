@@ -161,6 +161,47 @@ pub struct ReviewResponse {
     pub created_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct Payment {
+    pub id: String,
+    pub order_id: String,
+    pub user_id: String,
+    pub amount: f64,
+    pub card_last_four: String,
+    pub card_brand: String,
+    pub status: String,
+    pub transaction_id: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaymentResponse {
+    pub id: String,
+    pub order_id: String,
+    pub amount: f64,
+    pub card_last_four: String,
+    pub card_brand: String,
+    pub status: String,
+    pub transaction_id: Option<String>,
+    pub created_at: String,
+}
+
+impl From<Payment> for PaymentResponse {
+    fn from(p: Payment) -> Self {
+        Self {
+            id: p.id,
+            order_id: p.order_id,
+            amount: p.amount,
+            card_last_four: p.card_last_four,
+            card_brand: p.card_brand,
+            status: p.status,
+            transaction_id: p.transaction_id,
+            created_at: p.created_at,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiResponse<T> {
     pub success: bool,

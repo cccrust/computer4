@@ -87,6 +87,21 @@ pub async fn init_db(database_url: &str) -> Result<DbPool, AppError> {
             FOREIGN KEY (user_id) REFERENCES users(id),
             UNIQUE(product_id, user_id)
         );
+
+        CREATE TABLE IF NOT EXISTS payments (
+            id TEXT PRIMARY KEY,
+            order_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            amount REAL NOT NULL,
+            card_last_four TEXT NOT NULL,
+            card_brand TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            transaction_id TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (order_id) REFERENCES orders(id),
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        );
         "#,
     )
     .execute(&pool)

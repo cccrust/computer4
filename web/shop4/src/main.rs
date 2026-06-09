@@ -1,5 +1,6 @@
 mod auth;
 mod db;
+mod ecpay;
 mod error;
 mod handlers;
 mod models;
@@ -61,6 +62,12 @@ async fn main() {
         .route("/api/orders", get(handlers::get_orders))
         .route("/api/orders", post(handlers::create_order))
         .route("/api/orders/:id", get(handlers::get_order))
+        .route("/api/payments", post(handlers::create_payment))
+        .route("/api/payments", get(handlers::get_payments))
+        .route("/api/payments/:id", get(handlers::get_payment))
+        .route("/api/payments/ecpay/create", post(handlers::create_ecpay_order))
+        .route("/api/payments/ecpay/return", post(handlers::ecpay_return))
+        .route("/api/payments/ecpay/callback", post(handlers::ecpay_callback))
         .route("/api/user/profile", get(handlers::get_user_profile))
         .layer(cors)
         .layer(TraceLayer::new_for_http())

@@ -1,13 +1,16 @@
 use crate::auth::{extract_token, validate_token};
+use crate::ecpay::{EcpayClient, EcpayConfig, EcpayReturnData};
 use crate::error::AppError;
 use crate::models::*;
 use axum::{
     extract::{Path, Query, State},
     http::HeaderMap,
+    response::{Html, IntoResponse},
     Json,
 };
 use serde::Deserialize;
 use sqlx::SqlitePool;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -58,6 +61,16 @@ pub struct CreateOrderRequest {
 pub struct CreateReviewRequest {
     pub rating: i32,
     pub comment: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreatePaymentRequest {
+    pub order_id: String,
+    pub card_number: String,
+    pub card_brand: String,
+    pub expiry_month: String,
+    pub expiry_year: String,
+    pub cvv: String,
 }
 
 pub async fn get_categories(
@@ -658,6 +671,286 @@ pub async fn get_product_reviews(
         .collect();
 
     Ok(Json(ApiResponse::success(response)))
+}
+
+pub async fn create_payment(
+    State(pool): State<Arc<SqlitePool>>,
+    headers: HeaderMap,
+    Json(payload): Json<CreatePaymentRequest>,
+) -> Result<Json<ApiResponse<PaymentResponse>>, AppError> {
+    let user = auth_user(&headers, &pool).await?;
+
+    let order: Option<Order> =
+        sqlx::query_as("SELECT * FROM orders WHERE id = ? AND user_id = ?")
+            .bind(&payload.order_id)
+            .bind(&user.id)
+            .fetch_optional(&*pool)
+            .await?;
+
+    let order = order.ok_or_else(|| AppError::NotFound("Order not found".to_string()))?;
+
+    if order.status != "pending" {
+        return Err(AppError::BadRequest("Order is not in pending status".to_string()));
+    }
+
+    let existing_payment: Option<Payment> =
+        sqlx::query_as("SELECT * FROM payments WHERE order_id = ? AND status = 'completed'")
+            .bind(&payload.order_id)
+            .fetch_optional(&*pool)
+            .await?;
+
+    if existing_payment.is_some() {
+        return Err(AppError::BadRequest("Order already paid".to_string()));
+    }
+
+    let card_last_four = if payload.card_number.len() >= 4 {
+        payload.card_number[payload.card_number.len() - 4..].to_string()
+    } else {
+        payload.card_number.clone()
+    };
+
+    let transaction_id = format!("TXN-{}", Uuid::new_v4().to_string().split('-').next().unwrap());
+
+    let payment_id = Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+
+    sqlx::query(
+        "INSERT INTO payments (id, order_id, user_id, amount, card_last_four, card_brand, status, transaction_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?)",
+    )
+    .bind(&payment_id)
+    .bind(&payload.order_id)
+    .bind(&user.id)
+    .bind(order.total_amount)
+    .bind(&card_last_four)
+    .bind(&payload.card_brand)
+    .bind(&transaction_id)
+    .bind(&now)
+    .bind(&now)
+    .execute(&*pool)
+    .await?;
+
+    sqlx::query("UPDATE orders SET status = 'paid', updated_at = ? WHERE id = ?")
+        .bind(&now)
+        .bind(&payload.order_id)
+        .execute(&*pool)
+        .await?;
+
+    Ok(Json(ApiResponse::success(PaymentResponse {
+        id: payment_id,
+        order_id: payload.order_id,
+        amount: order.total_amount,
+        card_last_four,
+        card_brand: payload.card_brand,
+        status: "completed".to_string(),
+        transaction_id: Some(transaction_id),
+        created_at: now,
+    })))
+}
+
+pub async fn get_payment(
+    State(pool): State<Arc<SqlitePool>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<PaymentResponse>>, AppError> {
+    let user = auth_user(&headers, &pool).await?;
+
+    let payment: Option<Payment> =
+        sqlx::query_as("SELECT * FROM payments WHERE id = ? AND user_id = ?")
+            .bind(&id)
+            .bind(&user.id)
+            .fetch_optional(&*pool)
+            .await?;
+
+    match payment {
+        Some(p) => Ok(Json(ApiResponse::success(p.into()))),
+        None => Err(AppError::NotFound("Payment not found".to_string())),
+    }
+}
+
+pub async fn get_payments(
+    State(pool): State<Arc<SqlitePool>>,
+    headers: HeaderMap,
+) -> Result<Json<ApiResponse<Vec<PaymentResponse>>>, AppError> {
+    let user = auth_user(&headers, &pool).await?;
+
+    let payments: Vec<Payment> =
+        sqlx::query_as("SELECT * FROM payments WHERE user_id = ? ORDER BY created_at DESC")
+            .bind(&user.id)
+            .fetch_all(&*pool)
+            .await?;
+
+    let response: Vec<PaymentResponse> = payments.into_iter().map(|p| p.into()).collect();
+
+    Ok(Json(ApiResponse::success(response)))
+}
+
+pub async fn create_ecpay_order(
+    State(pool): State<Arc<SqlitePool>>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateEcpayOrderRequest>,
+) -> Result<Html<String>, AppError> {
+    let user = auth_user(&headers, &pool).await?;
+
+    let order: Option<Order> =
+        sqlx::query_as("SELECT * FROM orders WHERE id = ? AND user_id = ?")
+            .bind(&payload.order_id)
+            .bind(&user.id)
+            .fetch_optional(&*pool)
+            .await?;
+
+    let order = order.ok_or_else(|| AppError::NotFound("Order not found".to_string()))?;
+
+    if order.status != "pending" {
+        return Err(AppError::BadRequest("Order is not in pending status".to_string()));
+    }
+
+    let existing_payment: Option<Payment> =
+        sqlx::query_as("SELECT * FROM payments WHERE order_id = ? AND status = 'paid'")
+            .bind(&payload.order_id)
+            .fetch_optional(&*pool)
+            .await?;
+
+    if existing_payment.is_some() {
+        return Err(AppError::BadRequest("Order already paid".to_string()));
+    }
+
+    let payment_id = Uuid::new_v4().to_string();
+
+    sqlx::query(
+        "INSERT INTO payments (id, order_id, user_id, amount, card_last_four, card_brand, status, transaction_id, created_at, updated_at) VALUES (?, ?, ?, ?, '', 'ECPAY', 'pending', '', datetime('now'), datetime('now'))",
+    )
+    .bind(&payment_id)
+    .bind(&payload.order_id)
+    .bind(&user.id)
+    .bind(order.total_amount)
+    .execute(&*pool)
+    .await?;
+
+    let config = EcpayConfig::sandbox();
+    let client = EcpayClient::new(config);
+
+    let items: Vec<OrderItem> = sqlx::query_as("SELECT * FROM order_items WHERE order_id = ?")
+        .bind(&payload.order_id)
+        .fetch_all(&*pool)
+        .await?;
+
+    let mut item_names = Vec::new();
+    for item in items.iter().take(5) {
+        let product: Product = sqlx::query_as("SELECT name FROM products WHERE id = ?")
+            .bind(&item.product_id)
+            .fetch_one(&*pool)
+            .await?;
+        item_names.push(format!("{} x{}", product.name, item.quantity));
+    }
+    let item_name = if items.len() > 5 {
+        format!("{} ... ({} items)", item_names.join("#"), items.len())
+    } else {
+        item_names.join("#")
+    };
+
+    let params = crate::ecpay::CreateEcpayOrderParams {
+        merchant_trade_no: payment_id.clone(),
+        total_amount: order.total_amount as i64,
+        trade_desc: "Shop4 Order Payment".to_string(),
+        item_name,
+        return_url: payload.return_url.clone().unwrap_or_default(),
+        client_back_url: payload.return_url.unwrap_or_default(),
+    };
+
+    let form_html = client.create_credit_card_order(params).await
+        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+
+    Ok(Html(form_html))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateEcpayOrderRequest {
+    pub order_id: String,
+    pub return_url: Option<String>,
+}
+
+pub async fn ecpay_return(
+    State(pool): State<Arc<SqlitePool>>,
+    params: Query<BTreeMap<String, String>>,
+) -> Result<impl IntoResponse, AppError> {
+    let rtn_code = params.get("RtnCode").and_then(|s| s.parse::<i32>().ok()).unwrap_or(0);
+    let merchant_trade_no = params.get("MerchantTradeNo").cloned().unwrap_or_default();
+
+    if rtn_code == 1 {
+        let now = chrono::Utc::now().to_rfc3339();
+        let trade_no = params.get("TradeNo").cloned().unwrap_or_default();
+        let card4no = params.get("Card4No").cloned().unwrap_or_default();
+        let card6no = params.get("Card6No").cloned().unwrap_or_default();
+
+        let card_last_four = if !card4no.is_empty() {
+            card4no
+        } else if !card6no.is_empty() {
+            card6no[card6no.len().saturating_sub(4)..].to_string()
+        } else {
+            "N/A".to_string()
+        };
+
+        sqlx::query(
+            "UPDATE payments SET status = 'paid', card_last_four = ?, transaction_id = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(&card_last_four)
+        .bind(&trade_no)
+        .bind(&now)
+        .bind(&merchant_trade_no)
+        .execute(&*pool)
+        .await?;
+
+        sqlx::query("UPDATE orders SET status = 'paid', updated_at = ? WHERE id = (SELECT order_id FROM payments WHERE id = ?)")
+            .bind(&now)
+            .bind(&merchant_trade_no)
+            .execute(&*pool)
+            .await?;
+    }
+
+    Ok("1|OK".into_response())
+}
+
+pub async fn ecpay_callback(
+    State(pool): State<Arc<SqlitePool>>,
+    params: Query<BTreeMap<String, String>>,
+) -> Result<impl IntoResponse, AppError> {
+    let rtn_code = params.get("RtnCode").and_then(|s| s.parse::<i32>().ok()).unwrap_or(0);
+    let merchant_trade_no = params.get("MerchantTradeNo").cloned().unwrap_or_default();
+
+    if rtn_code == 1 {
+        let now = chrono::Utc::now().to_rfc3339();
+        let trade_no = params.get("TradeNo").cloned().unwrap_or_default();
+        let card4no = params.get("Card4No").cloned().unwrap_or_default();
+        let card6no = params.get("Card6No").cloned().unwrap_or_default();
+
+        let card_last_four = if !card4no.is_empty() {
+            card4no
+        } else if !card6no.is_empty() {
+            card6no[card6no.len().saturating_sub(4)..].to_string()
+        } else {
+            "N/A".to_string()
+        };
+
+        sqlx::query(
+            "UPDATE payments SET status = 'paid', card_last_four = ?, transaction_id = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(&card_last_four)
+        .bind(&trade_no)
+        .bind(&now)
+        .bind(&merchant_trade_no)
+        .execute(&*pool)
+        .await?;
+
+        sqlx::query("UPDATE orders SET status = 'paid', updated_at = ? WHERE id = (SELECT order_id FROM payments WHERE id = ?)")
+            .bind(&now)
+            .bind(&merchant_trade_no)
+            .execute(&*pool)
+            .await?;
+
+        tracing::info!("ECPay callback success: order_id={}, trade_no={}", merchant_trade_no, trade_no);
+    }
+
+    Ok("1|OK".into_response())
 }
 
 async fn auth_user(headers: &HeaderMap, pool: &SqlitePool) -> Result<User, AppError> {

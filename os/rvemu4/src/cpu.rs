@@ -91,7 +91,7 @@ impl Hart {
             CSR_SEPC => self.sepc = val, CSR_SCAUSE => self.scause = val,
             CSR_STVAL => self.stval = val,
             CSR_SIP => self.mip = (self.mip & !self.mideleg) | (val & self.mideleg),
-            CSR_SATP => self.satp = val, CSR_STIMECMP => self.stimecmp = val,
+            CSR_SATP => { self.satp = val; } CSR_STIMECMP => self.stimecmp = val,
             _ => {}
         }
     }
@@ -142,7 +142,7 @@ impl Hart {
     }
 
     pub fn trap(&mut self, cause: u64, tval: u64) {
-        eprintln!("TRAP pc={:#x} cause={:#x} tval={:#x} priv={}", self.pc, cause, tval, self.priv_level);
+        // eprintln!("TRAP pc={:#x} cause={:#x} tval={:#x} priv={} satp={:#x} stvec={:#x} mstatus={:#x}", self.pc, cause, tval, self.priv_level, self.satp, self.stvec, self.mstatus);
         let is_int = (cause >> 63) != 0; let code = cause & 0x7FFFFFFFFFFFFFFF;
         let deleg = self.priv_level <= PRV_S && (if is_int { (self.mideleg >> code) & 1 != 0 } else { (self.medeleg >> code) & 1 != 0 });
         if deleg {
@@ -184,8 +184,19 @@ impl Hart {
     fn sext(v: u64, bits: u32) -> i64 { let m = 1u64 << (bits - 1); (v ^ m) as i64 - m as i64 }
 
     pub fn step(&mut self, bus: &mut Bus) -> bool {
-        let inst_raw = match self.vm_fetch(bus, self.pc, false) { Ok(v) => v as u32, Err(c) => { eprintln!("FETCH_TRAP pc={:#x} cause={}", self.pc, c); self.trap(c, self.pc); return true; } };
-        if self.instret < 10000 { eprintln!("INST pc={:#x} inst={:#08x} priv={} mstatus={:#x} mie={:#x} mip={:#x}", self.pc, inst_raw, self.priv_level, self.mstatus, self.mie, self.mip); }
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static INST_N: AtomicU64 = AtomicU64::new(0);
+        let n = INST_N.fetch_add(1, Ordering::Relaxed);
+        let inst_raw = match self.vm_fetch(bus, self.pc, false) { Ok(v) => v as u32, Err(c) => { self.trap(c, self.pc); return true; } };
+        if n < 500 { eprintln!("{:6} pc={:#x} inst={:#06x} x1={:#x} x2={:#x}", n, self.pc, inst_raw, self.x[1], self.x[2]); }
+        if n >= 79500 && n <= 79520 { eprintln!("{:6} pc={:#x} inst={:#010x} x1={:#x} x2={:#x} x10={:#x}", n, self.pc, inst_raw, self.x[1], self.x[2], self.x[10]); }
+        if n >= 79565 && n <= 79590 { eprintln!("{:6} pc={:#x} inst={:#010x} x1={:#x} x2={:#x} x10={:#x} x8={:#x} x9={:#x}", n, self.pc, inst_raw, self.x[1], self.x[2], self.x[10], self.x[8], self.x[9]); }
+        if self.pc > 0x88000000 || self.pc < 0x80000000 {
+            if n > 500 {
+                eprintln!("DIVERGE steps={} pc={:#x} inst={:#010x} priv={} satp={:#x} stvec={:#x} sepc={:#x} scause={:#x} mstatus={:#x} x1={:#x} x2={:#x} x3={:#x} x4={:#x} x5={:#x} x6={:#x} x8={:#x} x9={:#x} x10={:#x}", n, self.pc, inst_raw, self.priv_level, self.satp, self.stvec, self.sepc, self.scause, self.mstatus, self.x[1], self.x[2], self.x[3], self.x[4], self.x[5], self.x[6], self.x[8], self.x[9], self.x[10]);
+                std::process::exit(1);
+            }
+        }
         if (inst_raw & 0x3) != 0x3 { return self.exec_rvc(bus, inst_raw as u16); }
 
         let (rd, rs1, rs2, f3, f7) = (
@@ -204,8 +215,8 @@ impl Hart {
         match inst_raw & 0x7F {
             0x37 => wr!(rd, imm_u as u64),
             0x17 => wr!(rd, self.pc.wrapping_add(imm_u as u64)),
-            0x6F => { let tgt = self.pc.wrapping_add(imm_j as u64); eprintln!("JAL pc={:#x} rd={} imm_j={:#x} npc0={:#x} tgt={:#x}", self.pc, rd, imm_j as u64, npc, tgt); wr!(rd, npc); npc = tgt; }
-            0x67 => { wr!(rd, npc); npc = (r1.wrapping_add(imm_i as u64)) & !1; }
+             0x6F => { let tgt = self.pc.wrapping_add(imm_j as u64); wr!(rd, npc); npc = tgt; }
+             0x67 => { let jtgt = (r1.wrapping_add(imm_i as u64)) & !1; wr!(rd, npc); npc = jtgt; }
              0x63 => {
                  let take_branch = if self.is_64 {
                      match f3 {
@@ -224,11 +235,11 @@ impl Hart {
                  };
                  if take_branch { npc = self.pc.wrapping_add(imm_b as u64); }
              }
-            0x03 => {
+             0x03 => {
                 let addr = r1.wrapping_add(imm_i as u64); let sz = match f3 & 3 { 0 => 1, 1 => 2, 2 => 4, _ => 8 };
                 if !self.is_64 && sz == 8 { self.trap(EXC_ILLEGAL_INST, inst_raw as u64); return true; }
                 match self.vm_read(bus, addr, sz) {
-                    Ok(val) => wr!(rd, match f3 { 0 => val as i8 as i64 as u64, 1 => val as i16 as i64 as u64, 2 => val as i32 as i64 as u64, 3 => val, 4 => val & 0xFF, 5 => val & 0xFFFF, 6 => val & 0xFFFFFFFF, _ => val }),
+                    Ok(val) => { wr!(rd, match f3 { 0 => val as i8 as i64 as u64, 1 => val as i16 as i64 as u64, 2 => val as i32 as i64 as u64, 3 => val, 4 => val & 0xFF, 5 => val & 0xFFFF, 6 => val & 0xFFFFFFFF, _ => val }); }
                     Err(c) => { self.trap(c, addr); return true; }
                 }
             }
@@ -325,7 +336,6 @@ impl Hart {
                     let mpp = ((self.mstatus >> 11) & 3) as u8;
                     self.mstatus = if self.mstatus & (1<<7) != 0 { self.mstatus | (1<<3) } else { self.mstatus & !(1<<3) };
                     self.mstatus |= 1<<7; self.mstatus &= !(3<<11); self.priv_level = mpp; npc = self.mepc;
-                    eprintln!("MRET target={:#x} priv={} mstatus={:#x}", self.mepc, mpp, self.mstatus);
                 } else if inst_raw == 0x10200073 {
                     let spp = ((self.mstatus >> 8) & 1) as u8;
                     self.mstatus = if self.mstatus & (1<<5) != 0 { self.mstatus | (1<<1) } else { self.mstatus & !(1<<1) };
@@ -392,26 +402,34 @@ impl Hart {
                         | ((i >> 7) as u64 & 1) << 6 | ((i >> 8) as u64 & 1) << 5 | ((i >> 9) as u64 & 1) << 1;
                     if nzu != 0 { self.x[rd_s] = self.x[2].wrapping_add(nzu); }
                 }
-                2 => {
-                    let off = ((i >> 5) as u64 & 3) << 6 | ((i >> 6) as u64 & 1) << 2 | ((i >> 10) as u64 & 3) << 4 | ((i >> 12) as u64 & 1) << 3;
+                 2 => {
+                    let off = ((i >> 6) as u64 & 1) << 7 | ((i >> 5) as u64 & 1) << 6 | ((i >> 12) as u64 & 1) << 5
+                        | ((i >> 11) as u64 & 1) << 4 | ((i >> 10) as u64 & 1) << 3
+                        | ((i >> 4) as u64 & 1) << 2 | ((i >> 3) as u64 & 1) << 1 | ((i >> 2) as u64 & 1);
                     let addr = self.x[rs1_s].wrapping_add(off);
                     match self.vm_read(bus, addr, 4) { Ok(v) => wr!(rd_s, v as i32 as i64 as u64), Err(c) => { self.trap(c, addr); return true; } }
                 }
                 3 => {
                     if self.is_64 {
-                        let off = ((i >> 5) as u64 & 3) << 6 | ((i >> 6) as u64 & 1) << 2 | ((i >> 10) as u64 & 3) << 4 | ((i >> 12) as u64 & 1) << 3;
+                        let off = ((i >> 6) as u64 & 1) << 7 | ((i >> 5) as u64 & 1) << 6 | ((i >> 12) as u64 & 1) << 5
+                            | ((i >> 11) as u64 & 1) << 4 | ((i >> 10) as u64 & 1) << 3
+                            | ((i >> 4) as u64 & 1) << 2 | ((i >> 3) as u64 & 1) << 1 | ((i >> 2) as u64 & 1);
                         let addr = self.x[rs1_s].wrapping_add(off);
                         match self.vm_read(bus, addr, 8) { Ok(v) => wr!(rd_s, v), Err(c) => { self.trap(c, addr); return true; } }
                     } else { self.trap(EXC_ILLEGAL_INST, i as u64); return true; }
                 }
                 6 => {
-                    let off = ((i >> 5) as u64 & 3) << 6 | ((i >> 6) as u64 & 1) << 2 | ((i >> 10) as u64 & 3) << 4 | ((i >> 12) as u64 & 1) << 3;
+                    let off = ((i >> 6) as u64 & 1) << 7 | ((i >> 5) as u64 & 1) << 6 | ((i >> 12) as u64 & 1) << 5
+                        | ((i >> 11) as u64 & 1) << 4 | ((i >> 10) as u64 & 1) << 3
+                        | ((i >> 4) as u64 & 1) << 2 | ((i >> 3) as u64 & 1) << 1 | ((i >> 2) as u64 & 1);
                     let addr = self.x[rs1_s].wrapping_add(off);
                     if self.vm_write(bus, addr, self.x[rs2_s] as u32 as u64, 4).is_err() { self.trap(EXC_STORE_PAGE_FAULT, addr); return true; }
                 }
                 7 => {
                     if self.is_64 {
-                        let off = ((i >> 5) as u64 & 3) << 6 | ((i >> 6) as u64 & 1) << 2 | ((i >> 10) as u64 & 3) << 4 | ((i >> 12) as u64 & 1) << 3;
+                        let off = ((i >> 6) as u64 & 1) << 7 | ((i >> 5) as u64 & 1) << 6 | ((i >> 12) as u64 & 1) << 5
+                            | ((i >> 11) as u64 & 1) << 4 | ((i >> 10) as u64 & 1) << 3
+                            | ((i >> 4) as u64 & 1) << 2 | ((i >> 3) as u64 & 1) << 1 | ((i >> 2) as u64 & 1);
                         let addr = self.x[rs1_s].wrapping_add(off);
                         if self.vm_write(bus, addr, self.x[rs2_s], 8).is_err() { self.trap(EXC_STORE_PAGE_FAULT, addr); return true; }
                     } else { self.trap(EXC_ILLEGAL_INST, i as u64); return true; }
@@ -453,46 +471,51 @@ impl Hart {
                             let sh = ((i >> 2) as u64 & 0x1F) | ((b12 as u64) << 5);
                             self.x[rd_s] >>= sh;
                         }
-                        (0, 2, 0) => { self.x[rd_s] = self.x[rd_s].wrapping_sub(self.x[rs2_s]); }
-                        (0, 2, 1) => { self.x[rd_s] ^= self.x[rs2_s]; }
-                        (0, 3, 2) => { self.x[rd_s] |= self.x[rs2_s]; }
-                        (0, 3, 3) => { self.x[rd_s] &= self.x[rs2_s]; }
-                        (1, 1, _) => {
+                        (0, 1, _) => {
+                            let sh = ((i >> 2) as u64 & 0x1F) | ((b12 as u64) << 5);
+                            self.x[rd_s] = (self.x[rd_s] as i64 >> sh) as u64;
+                        }
+                        (0, 2, 0) | (0, 3, 0) => { self.x[rd_s] = self.x[rd_s].wrapping_sub(self.x[rs2_s]); }
+                        (0, 2, 1) | (0, 3, 1) => { self.x[rd_s] ^= self.x[rs2_s]; }
+                        (0, 2, 2) | (0, 3, 2) => { self.x[rd_s] |= self.x[rs2_s]; }
+                        (0, 2, 3) | (0, 3, 3) => { self.x[rd_s] &= self.x[rs2_s]; }
+                        (1, 1, _) | (1, 2, _) => {
                             let imm = Self::sext(((i >> 2) as u64 & 0x1F) | (((i as u64 >> 12) & 1) << 5), 6) as u64;
                             self.x[rd_s] &= imm;
                         }
-                        (1, 3, 0) => {
-                            if self.is_64 { self.x[rd_s] = (self.x[rd_s].wrapping_sub(self.x[rs2_s]) as i32) as i64 as u64; }
-                            else { self.trap(EXC_ILLEGAL_INST, i as u64); return true; }
-                        }
-                        (1, 3, 1) => {
-                            if self.is_64 { self.x[rd_s] = (self.x[rd_s].wrapping_add(self.x[rs2_s]) as i32) as i64 as u64; }
-                            else { self.trap(EXC_ILLEGAL_INST, i as u64); return true; }
-                        }
+                        (1, 3, 0) => { if self.is_64 { self.x[rd_s] = (self.x[rd_s].wrapping_sub(self.x[rs2_s]) as i32) as i64 as u64; } else { self.trap(EXC_ILLEGAL_INST, i as u64); return true; } }
+                        (1, 3, 1) => { if self.is_64 { self.x[rd_s] = (self.x[rd_s].wrapping_add(self.x[rs2_s]) as i32) as i64 as u64; } else { self.trap(EXC_ILLEGAL_INST, i as u64); return true; } }
                         _ => { self.trap(EXC_ILLEGAL_INST, i as u64); return true; }
                     }
                 }
                 5 => {
-                    let imm = ((i >> 2) as u64 & 0x7) << 1 | ((i >> 3) as u64 & 1) << 8 | ((i >> 4) as u64 & 1) << 9
-                        | ((i >> 5) as u64 & 3) << 6 | ((i >> 7) as u64 & 1) << 10 | ((i >> 8) as u64 & 1) << 2
-                        | ((i >> 9) as u64 & 1) << 3 | ((i >> 10) as u64 & 1) << 7 | ((i >> 11) as u64 & 1) << 4
-                        | ((i >> 12) as u64 & 1) << 11;
+                    let imm = ((i >> 12) as u64 & 1) << 11
+                        | ((i >> 8) as u64 & 1) << 10
+                        | ((i >> 10) as u64 & 1) << 9
+                        | ((i >> 9) as u64 & 1) << 8
+                        | ((i >> 6) as u64 & 1) << 7
+                        | ((i >> 7) as u64 & 1) << 6
+                        | ((i >> 2) as u64 & 1) << 5
+                        | ((i >> 11) as u64 & 1) << 4
+                        | ((i >> 5) as u64 & 1) << 3
+                        | ((i >> 4) as u64 & 1) << 2
+                        | ((i >> 3) as u64 & 1) << 1;
                     let jimm = Self::sext(imm, 12) as u64;
                     npc = self.pc.wrapping_add(jimm);
                 }
-                6 => {
+                 6 => {
                     let rs1_s = ((i >> 7) & 0x7) as usize + 8;
-                    let off = ((i >> 2) as u64 & 0x7) << 1 | ((i >> 3) as u64 & 1) << 5 | ((i >> 4) as u64 & 1) << 2
-                        | ((i >> 5) as u64 & 3) << 3 | ((i >> 10) as u64 & 1) << 6 | ((i >> 11) as u64 & 1) << 7
-                        | ((i >> 12) as u64 & 1) << 8;
+                    let off = ((i >> 12) as u64 & 1) << 8 | ((i >> 10) as u64 & 3) << 3
+                        | ((i >> 5) as u64 & 3) << 6 | ((i >> 3) as u64 & 3) << 1
+                        | ((i >> 2) as u64 & 1) << 5;
                     let bimm = Self::sext(off, 9) as u64;
                     if self.x[rs1_s] == 0 { npc = self.pc.wrapping_add(bimm); }
                 }
-                7 => {
+                 7 => {
                     let rs1_s = ((i >> 7) & 0x7) as usize + 8;
-                    let off = ((i >> 2) as u64 & 0x7) << 1 | ((i >> 3) as u64 & 1) << 5 | ((i >> 4) as u64 & 1) << 2
-                        | ((i >> 5) as u64 & 3) << 3 | ((i >> 10) as u64 & 1) << 6 | ((i >> 11) as u64 & 1) << 7
-                        | ((i >> 12) as u64 & 1) << 8;
+                    let off = ((i >> 12) as u64 & 1) << 8 | ((i >> 10) as u64 & 3) << 3
+                        | ((i >> 5) as u64 & 3) << 6 | ((i >> 3) as u64 & 3) << 1
+                        | ((i >> 2) as u64 & 1) << 5;
                     let bimm = Self::sext(off, 9) as u64;
                     if self.x[rs1_s] != 0 { npc = self.pc.wrapping_add(bimm); }
                 }
@@ -502,16 +525,16 @@ impl Hart {
                 0 => {
                     if rs1 != 0 { let sh = (i >> 2) as u64 & 0x1F | ((i >> 12) as u64 & 1) << 5; self.x[rs1] <<= sh; }
                 }
-                2 => {
-                    let off = ((i >> 2) as u64 & 3) << 2 | ((i >> 3) as u64 & 1) << 5 | ((i >> 4) as u64 & 1) << 6
-                        | ((i >> 5) as u64 & 3) << 3 | ((i >> 12) as u64 & 1) << 4;
+                 2 => {
+                    let off = ((i >> 4) as u64 & 1) << 7 | ((i >> 5) as u64 & 1) << 6
+                        | ((i >> 12) as u64 & 1) << 5 | ((i >> 6) as u64 & 1) << 4
+                        | ((i >> 3) as u64 & 1) << 3 | ((i >> 2) as u64 & 1) << 2;
                     let addr = self.x[2].wrapping_add(off);
                     match self.vm_read(bus, addr, 4) { Ok(v) => if rs1 != 0 { wr!(rs1, v as i32 as i64 as u64); }, Err(c) => { self.trap(c, addr); return true; } }
                 }
                 3 => {
                     if self.is_64 {
-                        let off = ((i >> 2) as u64 & 3) << 3 | ((i >> 3) as u64 & 1) << 5 | ((i >> 4) as u64 & 1) << 6
-                            | ((i >> 5) as u64 & 3) << 4 | ((i >> 12) as u64 & 1);
+                        let off = ((i >> 2) as u64 & 0x1F) | (((i >> 12) as u64 & 1) << 5);
                         let addr = self.x[2].wrapping_add(off);
                         match self.vm_read(bus, addr, 8) { Ok(v) => if rs1 != 0 { wr!(rs1, v); }, Err(c) => { self.trap(c, addr); return true; } }
                     } else { self.trap(EXC_ILLEGAL_INST, i as u64); return true; }
@@ -527,16 +550,14 @@ impl Hart {
                         } else { if rs1 != 0 { wr!(rs1, self.x[rs1].wrapping_add(self.x[rs2])); } }
                     }
                 }
-                6 => {
-                    let off = ((i >> 2) as u64 & 3) << 2 | ((i >> 3) as u64 & 1) << 5 | ((i >> 4) as u64 & 1) << 6
-                        | ((i >> 5) as u64 & 3) << 3 | ((i >> 6) as u64 & 1) << 7 | ((i >> 12) as u64 & 1) << 4;
+                 6 => {
+                    let off = (i >> 7) as u64 & 0x3F;
                     let addr = self.x[2].wrapping_add(off);
                     if self.vm_write(bus, addr, self.x[rs2] as u32 as u64, 4).is_err() { self.trap(EXC_STORE_PAGE_FAULT, addr); return true; }
                 }
                 7 => {
                     if self.is_64 {
-                        let off = ((i >> 2) as u64 & 3) << 3 | ((i >> 3) as u64 & 1) << 5 | ((i >> 4) as u64 & 1) << 6
-                            | ((i >> 5) as u64 & 3) << 4 | ((i >> 6) as u64 & 1) << 7 | ((i >> 12) as u64 & 1);
+                        let off = (i >> 7) as u64 & 0x3F;
                         let addr = self.x[2].wrapping_add(off);
                         if self.vm_write(bus, addr, self.x[rs2], 8).is_err() { self.trap(EXC_STORE_PAGE_FAULT, addr); return true; }
                     } else { self.trap(EXC_ILLEGAL_INST, i as u64); return true; }

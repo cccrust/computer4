@@ -41,14 +41,19 @@ fn main() {
     set_raw_mode(true);
 
     let mut poll_count: u64 = 0;
-    eprintln!("Starting main loop, entry={:#x}, is_64={}, smp={}", entry, is_64, smp);
+    let mut step_count: u64 = 0;
+    // eprintln!("Starting main loop, entry={:#x}, is_64={}, smp={}", entry, is_64, smp);
     loop {
         for h in harts.iter_mut() {
             h.check_interrupts(&mut bus);
             h.step(&mut bus);
+            step_count += 1;
         }
 
         poll_count += 1;
+        if poll_count % 1000000 == 0 {
+            eprintln!("PROGRESS steps={}K pc={:#x}", step_count / 1000, harts[0].pc);
+        }
         if poll_count % 256 == 0 {
             check_stdin(&mut bus);
             if bus.uart_has_irq() {

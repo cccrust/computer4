@@ -24,6 +24,7 @@ pub fn load_elf(path: &str, bus: &mut Bus) -> (u64, bool) {
         phoff = u64::from_le_bytes(buf[32..40].try_into().unwrap());
         phentsize = u16::from_le_bytes(buf[54..56].try_into().unwrap());
         phnum = u16::from_le_bytes(buf[56..58].try_into().unwrap());
+        eprintln!("ELF64 entry={:#x} phoff={} phentsize={} phnum={}", entry, phoff, phentsize, phnum);
         for i in 0..phnum {
             let off = phoff as usize + i as usize * phentsize as usize;
             if off + 56 > buf.len() { break; }
@@ -31,9 +32,10 @@ pub fn load_elf(path: &str, bus: &mut Bus) -> (u64, bool) {
             if ptype != 1 { continue; }
             let paddr = u64::from_le_bytes(buf[off+16..off+24].try_into().unwrap());
             let memsz = u64::from_le_bytes(buf[off+40..off+48].try_into().unwrap());
-            if memsz == 0 { continue; }
             let poff = u64::from_le_bytes(buf[off+8..off+16].try_into().unwrap());
             let filesz = u64::from_le_bytes(buf[off+32..off+40].try_into().unwrap());
+            eprintln!("  LOAD phdr[{}] paddr={:#x} memsz={:#x} filesz={:#x}", i, paddr, memsz, filesz);
+            if memsz == 0 { continue; }
             if paddr >= crate::memory::RAM_BASE && paddr + memsz <= crate::memory::RAM_BASE + crate::memory::RAM_SIZE {
                 let load_addr = (paddr - crate::memory::RAM_BASE) as usize;
                 for j in 0..filesz.min(memsz) as usize {

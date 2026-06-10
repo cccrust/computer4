@@ -41,6 +41,7 @@ fn main() {
     set_raw_mode(true);
 
     let mut poll_count: u64 = 0;
+    eprintln!("Starting main loop, entry={:#x}, is_64={}, smp={}", entry, is_64, smp);
     loop {
         for h in harts.iter_mut() {
             h.check_interrupts(&mut bus);

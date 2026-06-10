@@ -22,6 +22,7 @@ const CSR_STVAL: u32 = 0x143; const CSR_SIP: u32 = 0x144;
 const CSR_SATP: u32 = 0x180; const CSR_STIMECMP: u32 = 0x14D;
 const CSR_TIME: u32 = 0xC01; const CSR_CYCLE: u32 = 0xC00;
 const CSR_INSTRET: u32 = 0xC02;
+const CSR_PMPCFG0: u32 = 0x3A0; const CSR_PMPADDR0: u32 = 0x3B0;
 
 const SSTATUS_MASK: u64 = 0x800DE162;
 
@@ -31,6 +32,7 @@ pub struct Hart {
     pub medeleg: u64, pub mideleg: u64,
     pub mepc: u64, pub mcause: u64, pub mtval: u64, pub mtvec: u64, pub mscratch: u64,
     pub mcounteren: u64, pub menvcfg: u64, pub mhartid: u64,
+    pub pmpcfg0: u64, pub pmpaddr0: u64,
     pub stvec: u64, pub sepc: u64, pub scause: u64, pub stval: u64,
     pub satp: u64, pub sscratch: u64, pub stimecmp: u64, pub instret: u64,
 }
@@ -42,6 +44,7 @@ impl Hart {
             mstatus: 0, mie: 0, mip: 0, medeleg: 0, mideleg: 0,
             mepc: 0, mcause: 0, mtval: 0, mtvec: 0, mscratch: 0,
             mcounteren: 0, menvcfg: 0, mhartid: hart_id as u64,
+            pmpcfg0: 0, pmpaddr0: 0,
             stvec: 0, sepc: 0, scause: 0, stval: 0,
             satp: 0, sscratch: 0, stimecmp: u64::MAX, instret: 0,
         }
@@ -61,6 +64,7 @@ impl Hart {
             CSR_MSCRATCH => self.mscratch, CSR_MEPC => self.mepc,
             CSR_MCAUSE => self.mcause, CSR_MTVAL => self.mtval,
             CSR_MIP => self.mip, CSR_MHARTID => self.mhartid,
+            CSR_PMPCFG0 => self.pmpcfg0, CSR_PMPADDR0 => self.pmpaddr0,
             CSR_SSTATUS => self.mstatus & SSTATUS_MASK,
             CSR_SIE => self.mie & self.mideleg, CSR_STVEC => self.stvec,
             CSR_SSCRATCH => self.sscratch, CSR_SEPC => self.sepc,
@@ -80,6 +84,7 @@ impl Hart {
             CSR_MSCRATCH => self.mscratch = val, CSR_MEPC => self.mepc = val,
             CSR_MCAUSE => self.mcause = val, CSR_MTVAL => self.mtval = val,
             CSR_MIP => self.mip = val,
+            CSR_PMPCFG0 => self.pmpcfg0 = val, CSR_PMPADDR0 => self.pmpaddr0 = val,
             CSR_SSTATUS => self.mstatus = (self.mstatus & !SSTATUS_MASK) | (val & SSTATUS_MASK),
             CSR_SIE => self.mie = (self.mie & !self.mideleg) | (val & self.mideleg),
             CSR_STVEC => self.stvec = val & !3, CSR_SSCRATCH => self.sscratch = val,
@@ -137,6 +142,7 @@ impl Hart {
     }
 
     pub fn trap(&mut self, cause: u64, tval: u64) {
+        eprintln!("TRAP pc={:#x} cause={:#x} tval={:#x} priv={}", self.pc, cause, tval, self.priv_level);
         let is_int = (cause >> 63) != 0; let code = cause & 0x7FFFFFFFFFFFFFFF;
         let deleg = self.priv_level <= PRV_S && (if is_int { (self.mideleg >> code) & 1 != 0 } else { (self.medeleg >> code) & 1 != 0 });
         if deleg {
@@ -178,7 +184,8 @@ impl Hart {
     fn sext(v: u64, bits: u32) -> i64 { let m = 1u64 << (bits - 1); (v ^ m) as i64 - m as i64 }
 
     pub fn step(&mut self, bus: &mut Bus) -> bool {
-        let inst_raw = match self.vm_fetch(bus, self.pc, false) { Ok(v) => v as u32, Err(c) => { self.trap(c, self.pc); return true; } };
+        let inst_raw = match self.vm_fetch(bus, self.pc, false) { Ok(v) => v as u32, Err(c) => { eprintln!("FETCH_TRAP pc={:#x} cause={}", self.pc, c); self.trap(c, self.pc); return true; } };
+        if self.instret < 1000 { eprintln!("INST pc={:#x} inst={:#08x} priv={} mstatus={:#x} mie={:#x} mip={:#x}", self.pc, inst_raw, self.priv_level, self.mstatus, self.mie, self.mip); }
         if (inst_raw & 0x3) != 0x3 { return self.exec_rvc(bus, inst_raw as u16); }
 
         let (rd, rs1, rs2, f3, f7) = (

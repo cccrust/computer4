@@ -15,17 +15,20 @@ const CLINT_SIZE: u64 = 0x10000;
 pub struct Uart {
     ier: u8, lcr: u8,
     rx_buf: [u8; 256], rx_head: usize, rx_tail: usize,
+    tx_pending: bool,
 }
 impl Uart {
     pub fn new() -> Self {
-        Self { ier: 0, lcr: 0, rx_buf: [0; 256], rx_head: 0, rx_tail: 0 }
+        Self { ier: 0, lcr: 0, rx_buf: [0; 256], rx_head: 0, rx_tail: 0, tx_pending: false }
     }
     pub fn push_rx(&mut self, c: u8) {
         let n = (self.rx_tail + 1) % 256;
         if n != self.rx_head { self.rx_buf[self.rx_tail] = c; self.rx_tail = n; }
     }
     pub fn rx_ready(&self) -> bool { self.rx_head != self.rx_tail }
-    pub fn has_irq(&self) -> bool { self.rx_ready() && (self.ier & 1) != 0 }
+    pub fn has_irq(&self) -> bool {
+        (self.rx_ready() && (self.ier & 1) != 0) || (self.tx_pending && (self.ier & 2) != 0)
+    }
     pub fn read(&mut self, off: u64) -> u8 {
         match off {
             0 => {
@@ -37,7 +40,11 @@ impl Uart {
                 0
             }
             1 => self.ier,
-            2 => if self.rx_ready() && (self.ier & 1) != 0 { 4 } else { 1 },
+            2 => {
+                if self.rx_ready() && (self.ier & 1) != 0 { 4 }
+                else if self.tx_pending && (self.ier & 2) != 0 { self.tx_pending = false; 2 }
+                else { 1 }
+            }
             3 => self.lcr,
             5 => (if self.rx_ready() { 1 } else { 0 }) | 0x20 | 0x40,
             _ => 0,
@@ -50,6 +57,7 @@ impl Uart {
                 print!("{}", val as char);
                 use std::io::Write;
                 std::io::stdout().flush().ok();
+                self.tx_pending = true;
             }
             1 => self.ier = val,
             3 => self.lcr = val,
@@ -107,7 +115,9 @@ impl Plic {
         }
         if off >= 0x201000 && off < 0x201000 + 8 * 0x2000 {
             let hart = ((off - 0x201000) / 0x2000) as usize;
-            if hart < 8 && (off as u32) % 0x2000 == 0 { self.spriority[hart] = val; }
+            if hart < 8 {
+                if (off as u32) % 0x2000 == 0 { self.spriority[hart] = val; }
+            }
         }
     }
 }
@@ -224,6 +234,19 @@ impl Bus {
         if addr >= RTC_BASE && addr < RTC_BASE + 8 {
             let t = get_time_ns();
             return (t >> ((addr & 7) * 8)) as u8;
+        }
+        if addr >= VIRTIO0_BASE && addr < VIRTIO0_BASE + VIRTIO_SIZE {
+            let off = addr - VIRTIO0_BASE;
+            let reg = off & !3;
+            let byte = off & 3;
+            let val: u32 = match reg {
+                0x000 => 0x74726976, 0x004 => 2, 0x008 => 2, 0x00C => 0x554d4551,
+                0x010 => 0, 0x034 => 256,
+                0x044 => self.vblk.queue_ready, 0x060 => self.vblk.interrupt_status,
+                0x070 => self.vblk.status,
+                _ => 0,
+            };
+            return (val >> (byte * 8)) as u8;
         }
         0
     }

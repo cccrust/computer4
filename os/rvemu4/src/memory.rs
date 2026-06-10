@@ -202,10 +202,11 @@ pub struct Bus {
     pub plic: Plic,
     pub clint: Clint,
     pub vblk: VirtioBlk,
+    pub lr_reservations: [Option<u64>; 8],
 }
 impl Bus {
     pub fn new(ram_size: usize) -> Self {
-        Self { ram: vec![0; ram_size], uart: Uart::new(), plic: Plic::new(), clint: Clint::new(), vblk: VirtioBlk::new() }
+        Self { ram: vec![0; ram_size], uart: Uart::new(), plic: Plic::new(), clint: Clint::new(), vblk: VirtioBlk::new(), lr_reservations: [None; 8] }
     }
 
     pub fn load8(&mut self, addr: u64) -> u8 {
@@ -236,7 +237,7 @@ impl Bus {
     }
 
     pub fn store8(&mut self, addr: u64, val: u8) {
-        if addr >= RAM_BASE && addr < RAM_BASE + self.ram.len() as u64 { self.ram[(addr - RAM_BASE) as usize] = val; return; }
+        if addr >= RAM_BASE && addr < RAM_BASE + self.ram.len() as u64 { self.ram[(addr - RAM_BASE) as usize] = val; self.clear_reservations(addr); return; }
         if addr >= UART_BASE && addr < UART_BASE + 8 { self.uart.write(addr - UART_BASE, val); return; }
     }
     pub fn store16(&mut self, addr: u64, val: u16) {
@@ -244,12 +245,13 @@ impl Bus {
             let idx = (addr - RAM_BASE) as usize;
             self.ram[idx] = val as u8;
             self.ram[idx + 1] = (val >> 8) as u8;
+            self.clear_reservations(addr);
             return;
         }
     }
     pub fn store32(&mut self, addr: u64, val: u32) {
         if addr >= RAM_BASE && addr < RAM_BASE + self.ram.len() as u64 {
-            w32(&mut self.ram, addr - RAM_BASE, val); return;
+            w32(&mut self.ram, addr - RAM_BASE, val); self.clear_reservations(addr); return;
         }
         if addr >= VIRTIO0_BASE && addr < VIRTIO0_BASE + VIRTIO_SIZE {
             let off = addr - VIRTIO0_BASE;
@@ -288,7 +290,7 @@ impl Bus {
         }
     }
     pub fn store64(&mut self, addr: u64, val: u64) {
-        if addr >= RAM_BASE && addr < RAM_BASE + self.ram.len() as u64 { w64(&mut self.ram, addr - RAM_BASE, val); return; }
+        if addr >= RAM_BASE && addr < RAM_BASE + self.ram.len() as u64 { w64(&mut self.ram, addr - RAM_BASE, val); self.clear_reservations(addr); return; }
         if addr >= CLINT_BASE && addr < CLINT_BASE + CLINT_SIZE {
             let off = addr - CLINT_BASE;
             if off >= 0x4000 && off < 0x4000 + 64 {
@@ -306,16 +308,12 @@ impl Bus {
         match size { 1 => self.store8(addr, val as u8), 2 => self.store16(addr, val as u16), 4 => self.store32(addr, val as u32), 8 => self.store64(addr, val), _ => {} }
     }
 
-    pub fn check_uart_rx(&mut self) {
-        use std::io::Read;
-        let stdin = std::io::stdin();
-        let mut buf = [0u8; 1];
-        let mut handle = stdin.lock();
-        if handle.read(&mut buf).is_ok() && buf[0] != 0 {
-            self.uart.push_rx(buf[0]);
+    pub fn uart_has_irq(&self) -> bool { self.uart.has_irq() }
+    pub fn clear_reservations(&mut self, addr: u64) {
+        for r in self.lr_reservations.iter_mut() {
+            if *r == Some(addr) { *r = None; }
         }
     }
-    pub fn uart_has_irq(&self) -> bool { self.uart.has_irq() }
     pub fn push_uart_rx(&mut self, c: u8) { self.uart.push_rx(c); }
     pub fn clint_has_mti(&self, hart: usize, now: u64) -> bool {
         hart < 8 && self.clint.mtimecmp[hart] <= now

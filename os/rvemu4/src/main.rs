@@ -42,7 +42,10 @@ fn main() {
 
     let mut poll_count: u64 = 0;
     loop {
-        let boot_hart = &mut harts[0];
+        for h in harts.iter_mut() {
+            h.check_interrupts(&mut bus);
+            h.step(&mut bus);
+        }
 
         poll_count += 1;
         if poll_count % 256 == 0 {
@@ -50,12 +53,6 @@ fn main() {
             if bus.uart_has_irq() {
                 bus.plic.set_pending(10);
             }
-        }
-
-        boot_hart.check_interrupts(&mut bus);
-
-        if !boot_hart.step(&mut bus) {
-            break;
         }
     }
 }

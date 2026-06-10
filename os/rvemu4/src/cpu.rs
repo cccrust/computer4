@@ -3,7 +3,6 @@ use crate::memory::Bus;
 const PRV_U: u8 = 0; const PRV_S: u8 = 1; const PRV_M: u8 = 3;
 
 const EXC_ILLEGAL_INST: u64 = 2; const EXC_BREAKPOINT: u64 = 3;
-const EXC_ECALL_U: u64 = 8; const EXC_ECALL_S: u64 = 9; const EXC_ECALL_M: u64 = 11;
 const EXC_INST_PAGE_FAULT: u64 = 12; const EXC_LOAD_PAGE_FAULT: u64 = 13; const EXC_STORE_PAGE_FAULT: u64 = 15;
 
 const INT_SSI: u64 = 1; const INT_STI: u64 = 5; const INT_SEI: u64 = 9;
@@ -97,7 +96,7 @@ impl Hart {
         if (self.satp >> 60) != 8 { return Ok(vaddr); }
         let pt_base = (self.satp & 0xFFFFFFFFFFF) << 12;
         let idx = |lv: u32| (vaddr >> (12 + lv * 9)) & 0x1FF;
-        let mut a = pt_base; let mut pte = 0u64; let mut lvl: i32 = 2;
+        let mut a = pt_base; let mut pte; let mut lvl: i32 = 2;
         loop {
             let off = a + idx(lvl as u32) * 8;
             pte = bus.mmio_read(off, 8);
@@ -186,10 +185,10 @@ impl Hart {
             ((inst_raw >> 7) & 0x1F) as usize, ((inst_raw >> 15) & 0x1F) as usize,
             ((inst_raw >> 20) & 0x1F) as usize, (inst_raw >> 12) & 0x7, (inst_raw >> 25) & 0x7F);
         let imm_i = Self::sext(inst_raw as u64 >> 20, 12);
-        let imm_s = Self::sext((((inst_raw as u64 >> 25) << 5) | ((inst_raw >> 7) & 0x1F) as u64), 12);
-        let imm_b = Self::sext((((inst_raw as u64 >> 31) << 12) | ((inst_raw as u64 >> 7) & 1) << 11 | (((inst_raw >> 25) & 0x3F) as u64) << 5 | (((inst_raw >> 8) & 0xF) as u64) << 1), 13);
+        let imm_s = Self::sext(((inst_raw as u64 >> 25) << 5) | ((inst_raw >> 7) & 0x1F) as u64, 12);
+        let imm_b = Self::sext(((inst_raw as u64 >> 31) << 12) | ((inst_raw as u64 >> 7) & 1) << 11 | (((inst_raw >> 25) & 0x3F) as u64) << 5 | (((inst_raw >> 8) & 0xF) as u64) << 1, 13);
         let imm_u = Self::sext(inst_raw as u64 & 0xFFFFF000, 32);
-        let imm_j = Self::sext((((inst_raw as u64 >> 31) << 20) | ((inst_raw as u64 >> 12) & 0xFF) << 12 | ((inst_raw as u64 >> 20) & 1) << 11 | (((inst_raw >> 21) & 0x3FF) as u64) << 1), 21);
+        let imm_j = Self::sext(((inst_raw as u64 >> 31) << 20) | ((inst_raw as u64 >> 12) & 0xFF) << 12 | ((inst_raw as u64 >> 20) & 1) << 11 | (((inst_raw >> 21) & 0x3FF) as u64) << 1, 21);
 
         let mut npc = self.pc.wrapping_add(4);
         let r1 = self.x[rs1]; let r2 = self.x[rs2];
@@ -339,8 +338,15 @@ impl Hart {
                 let val = match self.vm_read(bus, addr, sz) { Ok(v) => if is_w { v as i32 as i64 as u64 } else { v }, Err(c) => { self.trap(c, addr); return true; } };
                 let op = f7 >> 2;
                 match op {
-                    2 => wr!(rd, val),
-                    3 => { if self.vm_write(bus, addr, r2, sz).is_err() { self.trap(EXC_STORE_PAGE_FAULT, addr); return true; } wr!(rd, 0); }
+                    2 => { bus.lr_reservations[self.mhartid as usize] = Some(addr); wr!(rd, val); }
+                    3 => {
+                        let ok = bus.lr_reservations[self.mhartid as usize] == Some(addr);
+                        bus.lr_reservations[self.mhartid as usize] = None;
+                        if ok {
+                            if self.vm_write(bus, addr, r2, sz).is_err() { self.trap(EXC_STORE_PAGE_FAULT, addr); return true; }
+                            wr!(rd, 0);
+                        } else { wr!(rd, 1); }
+                    }
                     _ => {
                         let ns = match op {
                             0 => val.wrapping_add(r2), 1 => r2, 4 => val ^ r2, 8 => val | r2, 12 => val & r2,
@@ -406,25 +412,25 @@ impl Hart {
             },
             1 => match f3 {
                 0 => {
-                    let imm = Self::sext((((i >> 7) as u64 & 0x1F) | ((i as u64 >> 12) & 1) << 5), 6) as u64;
+                    let imm = Self::sext(((i >> 7) as u64 & 0x1F) | ((i as u64 >> 12) & 1) << 5, 6) as u64;
                     if rs1 != 0 { wr!(rs1, self.x[rs1].wrapping_add(imm)); }
                 }
                 1 => {
                     if self.is_64 {
-                        let imm = Self::sext((((i >> 7) as u64 & 0x1F) | ((i as u64 >> 12) & 1) << 5), 6) as u64;
+                        let imm = Self::sext(((i >> 7) as u64 & 0x1F) | ((i as u64 >> 12) & 1) << 5, 6) as u64;
                         if rs1 != 0 { wr!(rs1, (self.x[rs1].wrapping_add(imm)) as i32 as i64 as u64); }
                     } else { self.trap(EXC_ILLEGAL_INST, i as u64); return true; }
                 }
                 2 => {
-                    let imm = Self::sext((((i >> 7) as u64 & 0x1F) | ((i as u64 >> 12) & 1) << 5), 6) as u64;
+                    let imm = Self::sext(((i >> 7) as u64 & 0x1F) | ((i as u64 >> 12) & 1) << 5, 6) as u64;
                     if rs1 != 0 { wr!(rs1, imm); }
                 }
                 3 => {
                     if rs1 == 2 {
-                        let imm = Self::sext(((((i >> 2) as u64 & 0x1F) | ((i >> 7) as u64 & 1) << 5 | ((i >> 8) as u64 & 3) << 6 | ((i >> 12) as u64 & 1) << 4)), 9) as u64;
+                        let imm = Self::sext(((i >> 2) as u64 & 0x1F) | ((i >> 7) as u64 & 1) << 5 | ((i >> 8) as u64 & 3) << 6 | ((i >> 12) as u64 & 1) << 4, 9) as u64;
                         self.x[2] = self.x[2].wrapping_add(imm);
                     } else if rs1 != 0 {
-                        let imm = Self::sext((((i >> 7) as u64 & 0x1F) | ((i >> 12) as u64 & 1) << 5), 6) as u64;
+                        let imm = Self::sext(((i >> 7) as u64 & 0x1F) | ((i >> 12) as u64 & 1) << 5, 6) as u64;
                         wr!(rs1, imm << 12);
                     }
                 }

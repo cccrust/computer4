@@ -185,7 +185,7 @@ impl Hart {
 
     pub fn step(&mut self, bus: &mut Bus) -> bool {
         let inst_raw = match self.vm_fetch(bus, self.pc, false) { Ok(v) => v as u32, Err(c) => { eprintln!("FETCH_TRAP pc={:#x} cause={}", self.pc, c); self.trap(c, self.pc); return true; } };
-        if self.instret < 1000 { eprintln!("INST pc={:#x} inst={:#08x} priv={} mstatus={:#x} mie={:#x} mip={:#x}", self.pc, inst_raw, self.priv_level, self.mstatus, self.mie, self.mip); }
+        if self.instret < 10000 { eprintln!("INST pc={:#x} inst={:#08x} priv={} mstatus={:#x} mie={:#x} mip={:#x}", self.pc, inst_raw, self.priv_level, self.mstatus, self.mie, self.mip); }
         if (inst_raw & 0x3) != 0x3 { return self.exec_rvc(bus, inst_raw as u16); }
 
         let (rd, rs1, rs2, f3, f7) = (
@@ -204,7 +204,7 @@ impl Hart {
         match inst_raw & 0x7F {
             0x37 => wr!(rd, imm_u as u64),
             0x17 => wr!(rd, self.pc.wrapping_add(imm_u as u64)),
-            0x6F => { wr!(rd, npc); npc = self.pc.wrapping_add(imm_j as u64); }
+            0x6F => { let tgt = self.pc.wrapping_add(imm_j as u64); eprintln!("JAL pc={:#x} rd={} imm_j={:#x} npc0={:#x} tgt={:#x}", self.pc, rd, imm_j as u64, npc, tgt); wr!(rd, npc); npc = tgt; }
             0x67 => { wr!(rd, npc); npc = (r1.wrapping_add(imm_i as u64)) & !1; }
              0x63 => {
                  let take_branch = if self.is_64 {
@@ -325,6 +325,7 @@ impl Hart {
                     let mpp = ((self.mstatus >> 11) & 3) as u8;
                     self.mstatus = if self.mstatus & (1<<7) != 0 { self.mstatus | (1<<3) } else { self.mstatus & !(1<<3) };
                     self.mstatus |= 1<<7; self.mstatus &= !(3<<11); self.priv_level = mpp; npc = self.mepc;
+                    eprintln!("MRET target={:#x} priv={} mstatus={:#x}", self.mepc, mpp, self.mstatus);
                 } else if inst_raw == 0x10200073 {
                     let spp = ((self.mstatus >> 8) & 1) as u8;
                     self.mstatus = if self.mstatus & (1<<5) != 0 { self.mstatus | (1<<1) } else { self.mstatus & !(1<<1) };
@@ -378,8 +379,8 @@ impl Hart {
         let rs1 = (i >> 7) as usize & 0x1F;
         let rs2 = (i >> 2) as usize & 0x1F;
         let rd_s = ((i >> 2) & 0x7) as usize + 8;
-        let rs1_s = rd_s;
-        let rs2_s = ((i >> 7) & 0x7) as usize + 8;
+        let rs1_s = ((i >> 7) & 0x7) as usize + 8;
+        let rs2_s = ((i >> 2) & 0x7) as usize + 8;
         let mut npc = self.pc.wrapping_add(2);
 
         macro_rules! wr { ($r:expr,$v:expr) => { if $r != 0 { self.x[$r] = if self.is_64 { $v } else { ($v as u32) as u64 }; } } }
@@ -419,17 +420,17 @@ impl Hart {
             },
             1 => match f3 {
                 0 => {
-                    let imm = Self::sext(((i >> 7) as u64 & 0x1F) | ((i as u64 >> 12) & 1) << 5, 6) as u64;
+                    let imm = Self::sext(((i >> 2) as u64 & 0x1F) | ((i as u64 >> 12) & 1) << 5, 6) as u64;
                     if rs1 != 0 { wr!(rs1, self.x[rs1].wrapping_add(imm)); }
                 }
                 1 => {
                     if self.is_64 {
-                        let imm = Self::sext(((i >> 7) as u64 & 0x1F) | ((i as u64 >> 12) & 1) << 5, 6) as u64;
+                        let imm = Self::sext(((i >> 2) as u64 & 0x1F) | ((i as u64 >> 12) & 1) << 5, 6) as u64;
                         if rs1 != 0 { wr!(rs1, (self.x[rs1].wrapping_add(imm)) as i32 as i64 as u64); }
                     } else { self.trap(EXC_ILLEGAL_INST, i as u64); return true; }
                 }
                 2 => {
-                    let imm = Self::sext(((i >> 7) as u64 & 0x1F) | ((i as u64 >> 12) & 1) << 5, 6) as u64;
+                    let imm = Self::sext(((i >> 2) as u64 & 0x1F) | ((i as u64 >> 12) & 1) << 5, 6) as u64;
                     if rs1 != 0 { wr!(rs1, imm); }
                 }
                 3 => {
@@ -437,17 +438,38 @@ impl Hart {
                         let imm = Self::sext(((i >> 2) as u64 & 0x1F) | ((i >> 7) as u64 & 1) << 5 | ((i >> 8) as u64 & 3) << 6 | ((i >> 12) as u64 & 1) << 4, 9) as u64;
                         self.x[2] = self.x[2].wrapping_add(imm);
                     } else if rs1 != 0 {
-                        let imm = Self::sext(((i >> 7) as u64 & 0x1F) | ((i >> 12) as u64 & 1) << 5, 6) as u64;
-                        wr!(rs1, imm << 12);
+                        let imm = Self::sext(((i >> 2) as u64 & 0x1F) | ((i >> 12) as u64 & 1) << 5, 6) as u64;
+                            wr!(rs1, imm << 12);
                     }
                 }
                 4 => {
-                    let rd_s = ((i >> 2) & 0x7) as usize + 8;
-                    let sh = (i >> 7) as u64 & 0x1F | ((i >> 12) as u64 & 1) << 5;
-                    if (i >> 11) & 1 == 0 {
-                        self.x[rd_s] >>= sh;
-                    } else {
-                        self.x[rd_s] = ((self.x[rd_s] as i64) >> sh) as u64;
+                    let rd_s = ((i >> 7) & 0x7) as usize + 8;
+                    let rs2_s = ((i >> 2) & 0x7) as usize + 8;
+                    let f2 = (i >> 10) & 3;
+                    let fs = (i >> 5) & 3;
+                    let b12 = (i >> 12) & 1;
+                    match (b12, f2, fs) {
+                        (0, 0, _) | (1, 0, _) => {
+                            let sh = ((i >> 2) as u64 & 0x1F) | ((b12 as u64) << 5);
+                            self.x[rd_s] >>= sh;
+                        }
+                        (0, 2, 0) => { self.x[rd_s] = self.x[rd_s].wrapping_sub(self.x[rs2_s]); }
+                        (0, 2, 1) => { self.x[rd_s] ^= self.x[rs2_s]; }
+                        (0, 3, 2) => { self.x[rd_s] |= self.x[rs2_s]; }
+                        (0, 3, 3) => { self.x[rd_s] &= self.x[rs2_s]; }
+                        (1, 1, _) => {
+                            let imm = Self::sext(((i >> 2) as u64 & 0x1F) | (((i as u64 >> 12) & 1) << 5), 6) as u64;
+                            self.x[rd_s] &= imm;
+                        }
+                        (1, 3, 0) => {
+                            if self.is_64 { self.x[rd_s] = (self.x[rd_s].wrapping_sub(self.x[rs2_s]) as i32) as i64 as u64; }
+                            else { self.trap(EXC_ILLEGAL_INST, i as u64); return true; }
+                        }
+                        (1, 3, 1) => {
+                            if self.is_64 { self.x[rd_s] = (self.x[rd_s].wrapping_add(self.x[rs2_s]) as i32) as i64 as u64; }
+                            else { self.trap(EXC_ILLEGAL_INST, i as u64); return true; }
+                        }
+                        _ => { self.trap(EXC_ILLEGAL_INST, i as u64); return true; }
                     }
                 }
                 5 => {

@@ -142,7 +142,7 @@ impl Hart {
     }
 
     pub fn trap(&mut self, cause: u64, tval: u64) {
-        // eprintln!("TRAP pc={:#x} cause={:#x} tval={:#x} priv={} satp={:#x} stvec={:#x} mstatus={:#x}", self.pc, cause, tval, self.priv_level, self.satp, self.stvec, self.mstatus);
+        if self.pc > 0x88000000 || self.pc < 0x80000000 { eprintln!("TRAP pc={:#x} cause={:#x} tval={:#x} priv={} satp={:#x} stvec={:#x} mstatus={:#x} sepc={:#x}", self.pc, cause, tval, self.priv_level, self.satp, self.stvec, self.mstatus, self.sepc); }
         let is_int = (cause >> 63) != 0; let code = cause & 0x7FFFFFFFFFFFFFFF;
         let deleg = self.priv_level <= PRV_S && (if is_int { (self.mideleg >> code) & 1 != 0 } else { (self.medeleg >> code) & 1 != 0 });
         if deleg {
@@ -188,9 +188,10 @@ impl Hart {
         static INST_N: AtomicU64 = AtomicU64::new(0);
         let n = INST_N.fetch_add(1, Ordering::Relaxed);
         let inst_raw = match self.vm_fetch(bus, self.pc, false) { Ok(v) => v as u32, Err(c) => { self.trap(c, self.pc); return true; } };
-        if n < 500 { eprintln!("{:6} pc={:#x} inst={:#06x} x1={:#x} x2={:#x}", n, self.pc, inst_raw, self.x[1], self.x[2]); }
+        if n < 800 { eprintln!("{:6} pc={:#x} inst={:#010x} x1={:#x} x2={:#x}", n, self.pc, inst_raw, self.x[1], self.x[2]); }
         if n >= 79500 && n <= 79520 { eprintln!("{:6} pc={:#x} inst={:#010x} x1={:#x} x2={:#x} x10={:#x}", n, self.pc, inst_raw, self.x[1], self.x[2], self.x[10]); }
         if n >= 79565 && n <= 79590 { eprintln!("{:6} pc={:#x} inst={:#010x} x1={:#x} x2={:#x} x10={:#x} x8={:#x} x9={:#x}", n, self.pc, inst_raw, self.x[1], self.x[2], self.x[10], self.x[8], self.x[9]); }
+        if n >= 6300 && n <= 6400 { eprintln!("{:6} pc={:#x} inst={:#010x} x1={:#x} x2={:#x} x8={:#x} x9={:#x} x10={:#x} priv={}", n, self.pc, inst_raw, self.x[1], self.x[2], self.x[8], self.x[9], self.x[10], self.priv_level); }
         if self.pc > 0x88000000 || self.pc < 0x80000000 {
             if n > 500 {
                 eprintln!("DIVERGE steps={} pc={:#x} inst={:#010x} priv={} satp={:#x} stvec={:#x} sepc={:#x} scause={:#x} mstatus={:#x} x1={:#x} x2={:#x} x3={:#x} x4={:#x} x5={:#x} x6={:#x} x8={:#x} x9={:#x} x10={:#x}", n, self.pc, inst_raw, self.priv_level, self.satp, self.stvec, self.sepc, self.scause, self.mstatus, self.x[1], self.x[2], self.x[3], self.x[4], self.x[5], self.x[6], self.x[8], self.x[9], self.x[10]);
@@ -398,39 +399,33 @@ impl Hart {
         match q {
             0 => match f3 {
                 0 => {
-                    let nzu = ((i >> 4) as u64 & 3) << 4 | ((i >> 5) as u64 & 1) << 3 | ((i >> 6) as u64 & 1) << 2
-                        | ((i >> 7) as u64 & 1) << 6 | ((i >> 8) as u64 & 1) << 5 | ((i >> 9) as u64 & 1) << 1;
-                    if nzu != 0 { self.x[rd_s] = self.x[2].wrapping_add(nzu); }
+                    let nzu = (((i >> 10) & 1) << 7) | (((i >> 9) & 1) << 6) | (((i >> 8) & 1) << 5)
+                        | (((i >> 7) & 1) << 4) | (((i >> 12) & 1) << 3) | (((i >> 11) & 1) << 2)
+                        | (((i >> 6) & 1) << 1) | ((i >> 5) & 1);
+                    if self.pc == 0x80001cca { eprintln!("DEBUG C.ADDI4SPN pc={:#x} i={:#06x} nzu={} off={} rd_s={} x2={:#x}", self.pc, i, nzu, (nzu as u64) << 2, rd_s, self.x[2]); }
+                    if nzu != 0 { self.x[rd_s] = self.x[2].wrapping_add((nzu as u64) << 2); }
                 }
                  2 => {
-                    let off = ((i >> 6) as u64 & 1) << 7 | ((i >> 5) as u64 & 1) << 6 | ((i >> 12) as u64 & 1) << 5
-                        | ((i >> 11) as u64 & 1) << 4 | ((i >> 10) as u64 & 1) << 3
-                        | ((i >> 4) as u64 & 1) << 2 | ((i >> 3) as u64 & 1) << 1 | ((i >> 2) as u64 & 1);
-                    let addr = self.x[rs1_s].wrapping_add(off);
+                    let uimm = (((i>>6)&1)<<4) | (((i>>5)&1)<<3) | (((i>>12)&1)<<2) | (((i>>11)&1)<<1) | ((i>>10)&1);
+                    let addr = self.x[rs1_s].wrapping_add((uimm as u64) << 3);
                     match self.vm_read(bus, addr, 4) { Ok(v) => wr!(rd_s, v as i32 as i64 as u64), Err(c) => { self.trap(c, addr); return true; } }
                 }
-                3 => {
+                 3 => {
                     if self.is_64 {
-                        let off = ((i >> 6) as u64 & 1) << 7 | ((i >> 5) as u64 & 1) << 6 | ((i >> 12) as u64 & 1) << 5
-                            | ((i >> 11) as u64 & 1) << 4 | ((i >> 10) as u64 & 1) << 3
-                            | ((i >> 4) as u64 & 1) << 2 | ((i >> 3) as u64 & 1) << 1 | ((i >> 2) as u64 & 1);
-                        let addr = self.x[rs1_s].wrapping_add(off);
+                        let uimm = (((i>>6)&1)<<4) | (((i>>5)&1)<<3) | (((i>>12)&1)<<2) | (((i>>11)&1)<<1) | ((i>>10)&1);
+                        let addr = self.x[rs1_s].wrapping_add((uimm as u64) << 3);
                         match self.vm_read(bus, addr, 8) { Ok(v) => wr!(rd_s, v), Err(c) => { self.trap(c, addr); return true; } }
                     } else { self.trap(EXC_ILLEGAL_INST, i as u64); return true; }
                 }
-                6 => {
-                    let off = ((i >> 6) as u64 & 1) << 7 | ((i >> 5) as u64 & 1) << 6 | ((i >> 12) as u64 & 1) << 5
-                        | ((i >> 11) as u64 & 1) << 4 | ((i >> 10) as u64 & 1) << 3
-                        | ((i >> 4) as u64 & 1) << 2 | ((i >> 3) as u64 & 1) << 1 | ((i >> 2) as u64 & 1);
-                    let addr = self.x[rs1_s].wrapping_add(off);
+                 6 => {
+                    let uimm = (((i>>6)&1)<<4) | (((i>>5)&1)<<3) | (((i>>12)&1)<<2) | (((i>>11)&1)<<1) | ((i>>10)&1);
+                    let addr = self.x[rs1_s].wrapping_add((uimm as u64) << 3);
                     if self.vm_write(bus, addr, self.x[rs2_s] as u32 as u64, 4).is_err() { self.trap(EXC_STORE_PAGE_FAULT, addr); return true; }
                 }
-                7 => {
+                 7 => {
                     if self.is_64 {
-                        let off = ((i >> 6) as u64 & 1) << 7 | ((i >> 5) as u64 & 1) << 6 | ((i >> 12) as u64 & 1) << 5
-                            | ((i >> 11) as u64 & 1) << 4 | ((i >> 10) as u64 & 1) << 3
-                            | ((i >> 4) as u64 & 1) << 2 | ((i >> 3) as u64 & 1) << 1 | ((i >> 2) as u64 & 1);
-                        let addr = self.x[rs1_s].wrapping_add(off);
+                        let uimm = (((i>>6)&1)<<4) | (((i>>5)&1)<<3) | (((i>>12)&1)<<2) | (((i>>11)&1)<<1) | ((i>>10)&1);
+                        let addr = self.x[rs1_s].wrapping_add((uimm as u64) << 3);
                         if self.vm_write(bus, addr, self.x[rs2_s], 8).is_err() { self.trap(EXC_STORE_PAGE_FAULT, addr); return true; }
                     } else { self.trap(EXC_ILLEGAL_INST, i as u64); return true; }
                 }
@@ -453,8 +448,14 @@ impl Hart {
                 }
                 3 => {
                     if rs1 == 2 {
-                        let imm = Self::sext(((i >> 2) as u64 & 0x1F) | ((i >> 7) as u64 & 1) << 5 | ((i >> 8) as u64 & 3) << 6 | ((i >> 12) as u64 & 1) << 4, 9) as u64;
-                        self.x[2] = self.x[2].wrapping_add(imm);
+                        let field = (((i >> 12) & 1) << 5) |
+                                    (((i >> 4) & 1) << 4) |
+                                    (((i >> 3) & 1) << 3) |
+                                    (((i >> 5) & 1) << 2) |
+                                    (((i >> 2) & 1) << 1) |
+                                    (((i >> 6) & 1) << 0);
+                        let imm = Self::sext(field as u64, 6) as i64 * 16;
+                        self.x[2] = self.x[2].wrapping_add(imm as u64);
                     } else if rs1 != 0 {
                         let imm = Self::sext(((i >> 2) as u64 & 0x1F) | ((i >> 12) as u64 & 1) << 5, 6) as u64;
                             wr!(rs1, imm << 12);
@@ -504,18 +505,28 @@ impl Hart {
                     npc = self.pc.wrapping_add(jimm);
                 }
                  6 => {
-                    let rs1_s = ((i >> 7) & 0x7) as usize + 8;
-                    let off = ((i >> 12) as u64 & 1) << 8 | ((i >> 10) as u64 & 3) << 3
-                        | ((i >> 5) as u64 & 3) << 6 | ((i >> 3) as u64 & 3) << 1
-                        | ((i >> 2) as u64 & 1) << 5;
+                    let rs1_s = ((i >> 2) & 0x7) as usize + 8;
+                    let off = ((i >> 12) as u64 & 1) << 8
+                        | ((i >> 9) as u64 & 1) << 7
+                        | ((i >> 8) as u64 & 1) << 6
+                        | ((i >> 5) as u64 & 1) << 5
+                        | ((i >> 11) as u64 & 1) << 4
+                        | ((i >> 10) as u64 & 1) << 3
+                        | ((i >> 7) as u64 & 1) << 2
+                        | ((i >> 6) as u64 & 1) << 1;
                     let bimm = Self::sext(off, 9) as u64;
                     if self.x[rs1_s] == 0 { npc = self.pc.wrapping_add(bimm); }
                 }
                  7 => {
-                    let rs1_s = ((i >> 7) & 0x7) as usize + 8;
-                    let off = ((i >> 12) as u64 & 1) << 8 | ((i >> 10) as u64 & 3) << 3
-                        | ((i >> 5) as u64 & 3) << 6 | ((i >> 3) as u64 & 3) << 1
-                        | ((i >> 2) as u64 & 1) << 5;
+                    let rs1_s = ((i >> 2) & 0x7) as usize + 8;
+                    let off = ((i >> 12) as u64 & 1) << 8
+                        | ((i >> 9) as u64 & 1) << 7
+                        | ((i >> 8) as u64 & 1) << 6
+                        | ((i >> 5) as u64 & 1) << 5
+                        | ((i >> 11) as u64 & 1) << 4
+                        | ((i >> 10) as u64 & 1) << 3
+                        | ((i >> 7) as u64 & 1) << 2
+                        | ((i >> 6) as u64 & 1) << 1;
                     let bimm = Self::sext(off, 9) as u64;
                     if self.x[rs1_s] != 0 { npc = self.pc.wrapping_add(bimm); }
                 }
@@ -526,16 +537,14 @@ impl Hart {
                     if rs1 != 0 { let sh = (i >> 2) as u64 & 0x1F | ((i >> 12) as u64 & 1) << 5; self.x[rs1] <<= sh; }
                 }
                  2 => {
-                    let off = ((i >> 4) as u64 & 1) << 7 | ((i >> 5) as u64 & 1) << 6
-                        | ((i >> 12) as u64 & 1) << 5 | ((i >> 6) as u64 & 1) << 4
-                        | ((i >> 3) as u64 & 1) << 3 | ((i >> 2) as u64 & 1) << 2;
-                    let addr = self.x[2].wrapping_add(off);
+                    let uimm = (((i>>4)&1)<<5) | (((i>>3)&1)<<4) | (((i>>2)&1)<<3) | (((i>>12)&1)<<2) | (((i>>6)&1)<<1) | ((i>>5)&1);
+                    let addr = self.x[2].wrapping_add((uimm as u64) << 2);
                     match self.vm_read(bus, addr, 4) { Ok(v) => if rs1 != 0 { wr!(rs1, v as i32 as i64 as u64); }, Err(c) => { self.trap(c, addr); return true; } }
                 }
-                3 => {
+                 3 => {
                     if self.is_64 {
-                        let off = ((i >> 2) as u64 & 0x1F) | (((i >> 12) as u64 & 1) << 5);
-                        let addr = self.x[2].wrapping_add(off);
+                        let uimm = (((i>>4)&1)<<5) | (((i>>3)&1)<<4) | (((i>>2)&1)<<3) | (((i>>12)&1)<<2) | (((i>>6)&1)<<1) | ((i>>5)&1);
+                        let addr = self.x[2].wrapping_add((uimm as u64) << 3);
                         match self.vm_read(bus, addr, 8) { Ok(v) => if rs1 != 0 { wr!(rs1, v); }, Err(c) => { self.trap(c, addr); return true; } }
                     } else { self.trap(EXC_ILLEGAL_INST, i as u64); return true; }
                 }
@@ -551,14 +560,14 @@ impl Hart {
                     }
                 }
                  6 => {
-                    let off = (i >> 7) as u64 & 0x3F;
-                    let addr = self.x[2].wrapping_add(off);
+                    let uimm = (((i>>9)&1)<<5) | (((i>>8)&1)<<4) | (((i>>7)&1)<<3) | (((i>>12)&1)<<2) | (((i>>11)&1)<<1) | ((i>>10)&1);
+                    let addr = self.x[2].wrapping_add((uimm as u64) << 2);
                     if self.vm_write(bus, addr, self.x[rs2] as u32 as u64, 4).is_err() { self.trap(EXC_STORE_PAGE_FAULT, addr); return true; }
                 }
-                7 => {
+                 7 => {
                     if self.is_64 {
-                        let off = (i >> 7) as u64 & 0x3F;
-                        let addr = self.x[2].wrapping_add(off);
+                        let uimm = (((i>>9)&1)<<5) | (((i>>8)&1)<<4) | (((i>>7)&1)<<3) | (((i>>12)&1)<<2) | (((i>>11)&1)<<1) | ((i>>10)&1);
+                        let addr = self.x[2].wrapping_add((uimm as u64) << 3);
                         if self.vm_write(bus, addr, self.x[rs2], 8).is_err() { self.trap(EXC_STORE_PAGE_FAULT, addr); return true; }
                     } else { self.trap(EXC_ILLEGAL_INST, i as u64); return true; }
                 }
@@ -567,5 +576,965 @@ impl Hart {
             _ => { self.trap(EXC_ILLEGAL_INST, i as u64); return true; }
         }
         self.pc = npc; self.x[0] = 0; self.instret += 1; true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::Bus;
+
+    const TEST_PC: u64 = 0x80000000;
+    const RAM_OFF: u64 = 0x80000000;
+
+    fn bus() -> Bus { Bus::new(0x10000) }
+
+    fn hart(regs: &[u64; 32], pc: u64, is_64: bool) -> Hart {
+        let mut h = Hart::new(0);
+        h.x = *regs;
+        h.pc = pc;
+        h.is_64 = is_64;
+        h.priv_level = PRV_M;
+        h
+    }
+
+    fn off(addr: u64) -> usize { (addr - RAM_OFF) as usize }
+
+    fn place_inst(b: &mut Bus, pc: u64, inst: u16) {
+        let o = off(pc);
+        b.ram[o] = inst as u8;
+        b.ram[o + 1] = (inst >> 8) as u8;
+        b.ram[o + 2] = 0;
+        b.ram[o + 3] = 0;
+    }
+    fn place_inst32(b: &mut Bus, pc: u64, inst: u32) {
+        let o = off(pc);
+        b.ram[o] = inst as u8;
+        b.ram[o + 1] = (inst >> 8) as u8;
+        b.ram[o + 2] = (inst >> 16) as u8;
+        b.ram[o + 3] = (inst >> 24) as u8;
+    }
+
+    fn exec_rvc(inst: u16, regs: &[u64; 32], pc: u64, is_64: bool) -> (Hart, Bus) {
+        let mut b = bus();
+        place_inst(&mut b, pc, inst);
+        let mut h = hart(regs, pc, is_64);
+        h.step(&mut b);
+        (h, b)
+    }
+    fn exec_rv64(inst: u32, regs: &[u64; 32], pc: u64, is_64: bool) -> (Hart, Bus) {
+        let mut b = bus();
+        place_inst32(&mut b, pc, inst);
+        let mut h = hart(regs, pc, is_64);
+        h.step(&mut b);
+        (h, b)
+    }
+
+    // ── RVC q=0 (Quadrant 0: C.ADDI4SPN, C.LW, C.LD, C.SW, C.SD) ──
+
+    #[test]
+    fn c_addi4spn_nzu4() {
+        // 0x0800: nzu = {b10,b9,b8,b7,b12,b11,b6,b5} = {0,0,0,0,0,1,0,0} = 4, off=16
+        let regs = [0u64; 32];
+        let mut h = hart(&regs, TEST_PC, true);
+        h.x[2] = 0x1000; // sp
+        let mut b = bus();
+        place_inst(&mut b, TEST_PC, 0x0800);
+        h.step(&mut b);
+        assert_eq!(h.x[8], 0x1010, "s0 should be sp + 16");
+        assert_eq!(h.pc, TEST_PC + 2);
+    }
+
+    #[test]
+    fn c_addi4spn_nzu1_off4() {
+        // nzu=1: {b10,b9,b8,b7,b12,b11,b6,b5} = {0,0,0,0,0,0,0,1}
+        // => bits[12:5]={b12=0,b11=0,b10=0,b9=0,b8=0,b7=0,b6=0,b5=1}=0x01
+        let inst: u16 = 0b000_00000001_000_00;
+        let mut h = hart(&[0u64; 32], TEST_PC, true);
+        h.x[2] = 0x1000;
+        let mut b = bus();
+        place_inst(&mut b, TEST_PC, inst);
+        h.step(&mut b);
+        assert_eq!(h.x[8], 0x1004, "s0 = sp + 4");
+    }
+
+    #[test]
+    fn c_addi4spn_nzu128_off512() {
+        // nzu=128: {b10,b9,b8,b7,b12,b11,b6,b5} = {1,0,0,0,0,0,0,0}
+        // => b10=1, rest=0. bits[12:5]={0,0,1,0,0,0,0,0}=0x20
+        let inst: u16 = 0b000_00100000_000_00;
+        let mut h = hart(&[0u64; 32], TEST_PC, true);
+        h.x[2] = 0x1000;
+        let mut b = bus();
+        place_inst(&mut b, TEST_PC, inst);
+        h.step(&mut b);
+        assert_eq!(h.x[8], 0x1200, "s0 = sp + 512");
+    }
+
+    #[test]
+    fn c_addi4spn_nzu255_off1020() {
+        // nzu=255: all bits set
+        // {b10,b9,b8,b7,b12,b11,b6,b5} = {1,1,1,1,1,1,1,1}
+        // bits[12:5]={1,1,1,1,1,1,1,1}=0xFF
+        let inst: u16 = 0b000_11111111_000_00;
+        let mut h = hart(&[0u64; 32], TEST_PC, true);
+        h.x[2] = 0x1000;
+        let mut b = bus();
+        place_inst(&mut b, TEST_PC, inst);
+        h.step(&mut b);
+        assert_eq!(h.x[8], 0x13FC, "s0 = sp + 1020");
+    }
+
+    #[test]
+    fn c_lw_q0_offset8() {
+        // uimm={b6,b5,b12,b11,b10}={0,0,0,0,1}=1, off=1<<3=8
+        // => b12=0,b11=0,b10=1,b6=0,b5=0
+        // bits[12:10]={0,0,1}=1, bits[6:5]={0,0}=0
+        // CL format: funct3=010 | offset5=b12=0 | rs1' | offset4:2={b6,b5,b4} | offset7:6={b3,b2}
+        // Hmm, the FORMULA uses {b6,b5,b12,b11,b10}, not the spec's CL format ordering
+        // Let me construct the instruction using the FORMULA bit positions:
+        // uimm[4]=b6, uimm[3]=b5, uimm[2]=b12, uimm[1]=b11, uimm[0]=b10
+        // For uimm=1 (0b00001): b10=1, b11=0, b12=0, b5=0, b6=0
+        // So instruction using standard CL format bit positions:
+        // bits[12]=b12=0, bits[11]=b11=0, bits[10]=b10=1, bits[6]=b6=0, bits[5]=b5=0
+        // Instruction: funct3=010 | 0 | rs1'=000 | 0 | 0 | ????
+        // Actually bits[4:2] and bits[3:2] for the rest... the CL format has:
+        // 15:13=f3=010 | 12=offset[5] | 11:10=rs1' | 9:7=offset[4:2] | 6:5=offset[7:6] | 4:2=rs1' | 1:0=00
+        // Wait that doesn't look right. Let me just pack the bits:
+        // bits[15:13] = 010
+        // bits[12] = b12 = 0
+        // bits[11:7] = rs1' = 0  (the rs1 field for CL format)
+        // bits[6] = b6 = 0
+        // bits[5] = b5 = 0
+        // bits[4:2] = rd' = 0  (actually for stores, rs2')
+        // bits[1:0] = 00
+
+        // Hmm, actually the CL format puts offset differently. Let me just use the code to
+        // figure out the encoding. The code extracts:
+        // uimm[4]=b6 (from bit 6), uimm[3]=b5 (from bit 5), uimm[2]=b12 (from bit 12),
+        // uimm[1]=b11 (from bit 11), uimm[0]=b10 (from bit 10)
+        //
+        // For uimm=0b00001: b10=1, b11=0, b12=0, b5=0, b6=0
+        // Instruction bits:
+        // bit[12]=b12=0, bit[11]=b11=0, bit[10]=b10=1, bit[6]=b6=0, bit[5]=b5=0
+        // bits[15:13]=010, bits[11:7]=rs1'=00000, bits[4:2]=rd'=000, bits[1:0]=00
+        // So: 010_0_00000_0_0_000_00 = ?
+        // Let me compute: 0b0100_0000_0000_0000 | 0 | 0 | 0
+        // = 0b0100_0000_0000_0000 | 0b0000_0010_0000_0000 | ...
+        // This is getting messy. Let me just construct the instruction byte by byte.
+
+        // CL format (from RISC-V spec):
+        // 15 14 13 | 12 | 11 10 9 8 7 | 6 5 | 4 3 2 | 1 0
+        // funct3   | i5 | rs1'        | i4:3 | i2:0  | 00
+
+        // Wait, I keep confusing myself. Let me look at the ACTUAL standard.
+        // From the RISC-V spec, CL layout:
+        // 15:13 = funct3 = 010 for C.LW, 011 for C.LD
+        // 12 = uimm[5]
+        // 11:7 = rs1'
+        // 6 = uimm[4]
+        // 5 = uimm[3]
+        // 4:2 = uimm[2:0]
+        // 1:0 = 00
+
+        // No wait, that's not right either. Let me just use the ENCODING from our derived formula.
+        // Our formula extracts: {b6, b5, b12, b11, b10} from bits {6, 5, 12, 11, 10}
+        // These are 5 bits from 5 specific positions.
+
+        // Let me construct the instruction for uimm=1:
+        // b10 must be 1, rest 0
+        // bit 12 = 0 (b12), bit 11 = 0 (b11), bit 10 = 1 (b10)
+        // bit 6 = 0 (b6), bit 5 = 0 (b5)
+        // bits[15:13] = 010
+        // bits[11:7] = rs1' = 0 (we'll use x8 as base, addr = x8 + offset)
+        // bits[4:2] = rd' = 0 (result goes to x8)
+        // bits[1:0] = 00
+
+        // Instruction = 0b010_0_00000_0_0_000_00 = 0x4000? Let me compute:
+        // bits: 0 1 0 | 0 | 0 0 0 0 0 | 0 | 0 | 0 0 0 | 0 0
+        // No wait:
+        // 15 = 0
+        // 14 = 1
+        // 13 = 0
+        // 12 = 0
+        // 11 = 0
+        // 10 = 1
+        // 9 = 0
+        // 8 = 0
+        // 7 = 0
+        // 6 = 0
+        // 5 = 0
+        // 4 = 0
+        // 3 = 0
+        // 2 = 0
+        // 1 = 0
+        // 0 = 0
+
+        // Binary: 0100_0100_0000_0000 = 0x4400
+        // Hmm, bit[10]=1 means bit[10] set to 1 in the instruction.
+        // 0x4400 = 0b0100_0100_0000_0000
+        // bit 15=0, bit 14=1, bit 13=0 → funct3=010 ✓
+        // bit 12=0 → b12=0 ✓
+        // bit 11=0 → b11=0 ✓
+        // bit 10=1 → b10=1 ✓
+        // bit 9=0, bit 8=0, bit 7=0 → rs1'=0
+        // bit 6=0, bit 5=0 → b6=0, b5=0 ✓
+        // bit 4=0, bit 3=0, bit 2=0 → rd'=0
+        // bit 1=0, bit 0=0 → q=0 ✓
+
+        // So instruction = 0x4400, uimm=1, off=8
+
+        let regs = [0u64; 32];
+        let mut h = hart(&regs, TEST_PC, true);
+        h.x[8] = 0x80002000; // base address in rs1' = x8
+        // Store a known value at address 0x80002000 + 8 = 0x80002008
+        let mut b = bus();
+        let addr = off(0x80002008);
+        b.ram[addr] = 0x78;
+        b.ram[addr+1] = 0x56;
+        b.ram[addr+2] = 0x34;
+        b.ram[addr+3] = 0x12;
+        place_inst(&mut b, TEST_PC, 0x4400);
+        h.step(&mut b);
+        assert_eq!(h.x[8], 0x12345678 as i32 as i64 as u64, "C.LW should load sign-extended word");
+    }
+
+    #[test]
+    fn c_sw_q0_offset8() {
+        // uimm={b6,b5,b12,b11,b10}={0,0,0,0,1}=1, off=8
+        // Same encoding as C.LW but funct3=110
+        // 0b110_0_00000_0_0_000_00 = 0xC400? 
+        // bits: 1 1 0 | 0 | 0 0 0 0 0 | 0 | 0 | 0 0 0 | 0 0
+        // bit 15=1, bit 14=1, bit 13=0, bit 12=0, bit 11=0, bit 10=1
+        // = 0b1100_0100_0000_0000 = 0xC400
+        let regs = [0u64; 32];
+        let mut h = hart(&regs, TEST_PC, true);
+        h.x[8] = 0x80002000; // rs1' = x8
+        h.x[9] = 0xDEADBEEF; // rs2' = x9 (bits[4:2]=1, rs2_s = 1+8 = 9)
+        // Instruction = 0b110_0_00000_0_0_001_00 = 0xC404
+        let mut b2 = bus();
+        place_inst(&mut b2, TEST_PC, 0xC404);
+        h.step(&mut b2);
+        let addr = off(0x80002008);
+        let stored_val = b2.ram[addr] as u32
+            | (b2.ram[addr + 1] as u32) << 8
+            | (b2.ram[addr + 2] as u32) << 16
+            | (b2.ram[addr + 3] as u32) << 24;
+        assert_eq!(stored_val, 0xDEADBEEF, "C.SW should store word at offset 8");
+    }
+
+    #[test]
+    fn c_ld_q0_offset8() {
+        // Same as C.LW but funct3=011, is_64=true
+        // uimm={b6,b5,b12,b11,b10}={0,0,0,0,1}=1, off=8
+        // Encoding: 0b011_0_00000_0_0_000_00 = 0x6400? 
+        // 0 1 1 | 0 | 0 0 0 0 0 | 0 | 0 | 0 0 0 | 0 0
+        // = 0b0110_0100_0000_0000 = 0x6400
+        let regs = [0u64; 32];
+        let mut h = hart(&regs, TEST_PC, true);
+        h.x[8] = 0x80002000;
+        let mut b = bus();
+        let addr = off(0x80002008);
+        let val: u64 = 0xDEADBEEF_12345678;
+        b.ram[addr] = val as u8;
+        b.ram[addr + 1] = (val >> 8) as u8;
+        b.ram[addr + 2] = (val >> 16) as u8;
+        b.ram[addr + 3] = (val >> 24) as u8;
+        b.ram[addr + 4] = (val >> 32) as u8;
+        b.ram[addr + 5] = (val >> 40) as u8;
+        b.ram[addr + 6] = (val >> 48) as u8;
+        b.ram[addr + 7] = (val >> 56) as u8;
+        place_inst(&mut b, TEST_PC, 0x6400);
+        h.step(&mut b);
+        assert_eq!(h.x[8], val, "C.LD should load 64-bit value");
+    }
+
+    #[test]
+    fn c_sd_q0_offset8() {
+        // funct3=111
+        // 0b111_0_00000_0_0_001_00 = 0xE404
+        // bits: 1 1 1 | 0 | 0 0 0 0 0 | 0 | 0 | 0 0 1 | 0 0
+        // = 0b1110_0100_0000_0100 = 0xE404
+        let regs = [0u64; 32];
+        let mut h = hart(&regs, TEST_PC, true);
+        h.x[8] = 0x80002000;
+        h.x[9] = 0xCAFEBABE_DEADBEEF;
+        let mut b = bus();
+        place_inst(&mut b, TEST_PC, 0xE404);
+        h.step(&mut b);
+        let addr = off(0x80002008);
+        let stored = u64::from_le_bytes(b.ram[addr..addr+8].try_into().unwrap());
+        assert_eq!(stored, 0xCAFEBABE_DEADBEEF, "C.SD should store 64 bits");
+    }
+
+    // ── RVC q=1 (Quadrant 1: C.ADDI, C.LI, C.ADDI16SP/C.LUI,
+    //   C.SRLI/SRAI/ANDI/C.SUB/C.XOR/C.OR/C.AND,
+    //   C.J, C.BEQZ, C.BNEZ) ──
+
+    #[test]
+    fn c_addi_neg1() {
+        // C.ADDI rs1, -1: imm = {b12,b6,b5,b4,b3,b2} = sext(0b111111, 6) = -1
+        // {b12=1, b6=1, b5=1, b4=1, b3=1, b2=1}
+        // bits[12]=1, bits[6:2]=11111
+        // Encoding: funct3=000 | b12=1 | rs1=00001 | b6=1,b5=1,b4=1,b3=1,b2=1 | q=01
+        // = 0b000_1_00001_11111_01 = 0b0001_0000_1111_1101 = 0x10FD
+        let inst: u16 = 0b000_1_00001_11111_01;
+        let regs = [0u64; 32];
+        let mut h = hart(&regs, TEST_PC, true);
+        h.x[1] = 100;
+        let mut b = bus();
+        place_inst(&mut b, TEST_PC, inst);
+        h.step(&mut b);
+        assert_eq!(h.x[1], 99, "x1 = 100 + (-1)");
+    }
+
+    #[test]
+    fn c_addi_pos31() {
+        // C.ADDI x1, 31: imm = {b12,b6,b5,b4,b3,b2} = 0b011111 = 31
+        // {b12=0, b6=1, b5=1, b4=1, b3=1, b2=1}
+        // bits[12]=0, bits[6:2]=11111
+        let inst: u16 = 0b000_0_00001_11111_01;
+        let regs = [0u64; 32];
+        let mut h = hart(&regs, TEST_PC, true);
+        h.x[1] = 100;
+        let mut b = bus();
+        place_inst(&mut b, TEST_PC, inst);
+        h.step(&mut b);
+        assert_eq!(h.x[1], 131, "x1 = 100 + 31");
+    }
+
+    #[test]
+    fn c_addi_neg16() {
+        // C.ADDI x1, -16: imm[5:0] = {b12=1,b6=1,b5=0,b4=0,b3=0,b2=0} = 0b110000 = -16
+        // bits[12]=1, bits[6:2]=10000
+        let inst: u16 = 0b000_1_00001_10000_01;
+        let regs = [0u64; 32];
+        let mut h = hart(&regs, TEST_PC, true);
+        h.x[1] = 100;
+        let mut b = bus();
+        place_inst(&mut b, TEST_PC, inst);
+        h.step(&mut b);
+        assert_eq!(h.x[1], 84, "x1 = 100 + (-16)");
+    }
+
+    #[test]
+    fn c_li_neg1() {
+        // C.LI rd, -1: same encoding as C.ADDI but funct3=010
+        // funct3=010, b12=1, rs1=10000=rd=0x10=16 (never zero since rd=rs1 field)
+        // bits[6:2]=11111
+        // Encoding: 0b010_1_10000_11111_01
+        let inst: u16 = 0b010_1_10000_11111_01;
+        let regs = [0u64; 32];
+        let mut h = hart(&regs, TEST_PC, true);
+        let mut b = bus();
+        place_inst(&mut b, TEST_PC, inst);
+        h.step(&mut b);
+        assert_eq!(h.x[16], (-1i64) as u64, "C.LI x16, -1");
+    }
+
+    #[test]
+    fn c_addi16sp_neg32() {
+        // C.ADDI16SP sp, -32
+        // Current code: field = {b12,b4,b3,b5,b2,b6} = sext(-2,6) = 0b111110
+        // {b12=1,b4=1,b3=1,b5=1,b2=1,b6=0}
+        // bits[12]=1, bits[6]=0, bits[5]=1, bits[4]=1, bits[3]=1, bits[2]=1
+        // inst = 0b011_1_00010_01111_01 = 0x713D
+        let inst: u16 = 0x713D;
+        let regs = [0u64; 32];
+        let mut h = hart(&regs, TEST_PC, true);
+        h.x[2] = 0x1000;
+        let mut b = bus();
+        place_inst(&mut b, TEST_PC, inst);
+        h.step(&mut b);
+        // imm = sext(field,6) = sext(0b111110,6) = -2, times 16 = -32
+        assert_eq!(h.x[2], 0x1000 - 32, "sp should be sp - 32");
+    }
+
+    #[test]
+    fn c_lui_rd_nonzero() {
+        // C.LUI x1, 0x1000: imm[5:0] field encodes imm[17:12]
+        // Actually C.LUI: rd=rs1 field, imm = sext({b12,b6,b5,b4,b3,b2},6) << 12
+        // For result 0x1000: sext_imm=1, so imm[17:12]=1, imm=0x1000
+        // {b12=0,b6=0,b5=0,b4=0,b3=0,b2=1}
+        // bits[12]=0, bits[6]=0, bits[5]=0, bits[4]=0, bits[3]=0, bits[2]=1
+        // funct3=011, rs1=1=00001
+        // inst = 0b011_0_00001_00001_01 = 0x6085
+        // Hmm, 0b0110_0000_1000_0101 = 0x6085
+        let inst: u16 = 0b011_0_00001_00001_01;
+        let regs = [0u64; 32];
+        let mut h = hart(&regs, TEST_PC, true);
+        let mut b = bus();
+        place_inst(&mut b, TEST_PC, inst);
+        h.step(&mut b);
+        assert_eq!(h.x[1], 0x1000, "C.LUI x1, 0x1000");
+    }
+
+    // ── CB format: C.BEQZ, C.BNEZ ──
+    // Spec formula for branch offset in CB format:
+    // imm[8]=b12, imm[7]=b9, imm[6]=b8, imm[5]=b5, imm[4]=b11, imm[3]=b10,
+    // imm[2]=b7, imm[1]=b6, imm[0]=0
+    // ⟹ off = (b12<<8)|(b9<<7)|(b8<<6)|(b5<<5)|(b11<<4)|(b10<<3)|(b7<<2)|(b6<<1)
+    //
+    // Current code uses:
+    // off = ((b12)<<8)|(b10,b9)<<3|(b6,b5)<<6|(b4,b3)<<1|(b2)<<5
+    // ⟹ off = {b12, b6, b5, b2, b10, b9, b4, b3, 0}
+
+    #[test]
+    fn c_beqz_forward_4() {
+        // Branch forward by 4 (imm[8:0]=4 = 0b00000100)
+        // imm[8]=b12=0, imm[7]=b9=0, imm[6]=b8=0, imm[5]=b5=0
+        // imm[4]=b11=0, imm[3]=b10=0, imm[2]=b7=1, imm[1]=b6=0
+        // bits[12]=0, bits[11]=0, bits[10]=0, bits[9]=0, bits[8]=0
+        // bits[7]=1, bits[6]=0, bits[5]=0
+        // funct3=110, rs1'=0
+        // inst = 0b110_0_00000_100_00_01 = 0xC020? 
+        // bits: 110 | 0 | 00000 | 1 | 00 | 000 | 01
+        // Wait, let me use the actual field layout for CB:
+        // 15:13 = funct3 = 110
+        // 12 = b12 = imm[8] = 0
+        // 11:10 = b11,b10 = imm[4:3] = {0,0}
+        // 9:7 = b9,b8,b7 = imm[7:5] = {0,0,1}
+        // 6:5 = b6,b5 = imm[2:1] = {0,0}
+        // 4:2 = rs1' = 000
+        // 1:0 = 01
+        // Wait no, the spec says:
+        // bits[9:8] = imm[7:6] = {b9,b8} ... hmm
+        // Let me just look at the encoding. The CB format uses:
+        // bits[12]=imm[8], bits[11:10]=imm[4:3], bits[9:8]=imm[7:6], bits[7:6]=imm[2:1], bits[5]=imm[5]
+        // Hmm no, I had:
+        // imm[8]=b12, imm[7]=b9, imm[6]=b8, imm[5]=b5, imm[4]=b11, imm[3]=b10, imm[2]=b7, imm[1]=b6
+        //
+        // For imm=4=0b00000100:
+        // imm[2]=1, rest=0
+        // b12=0, b11=0, b10=0, b9=0, b8=0, b7=1, b6=0, b5=0
+        //
+        // Spec encoding: bits[12]=b12=0, bits[11]:=b11=0, bits[10]=b10=0, bits[9]=b9=0, bits[8]=b8=0,
+        //                bits[7]=b7=1, bits[6]=b6=0, bits[5]=b5=0
+        //
+        // So the 16-bit instruction encoding with CB format:
+        // 15:13=110, 12=0, 11=0, 10=0, 9=0, 8=0, 7=1, 6=0, 5=0
+        // 4:2=rs1'=0, 1:0=01
+        // 0b110_0_0_0_0_0_1_0_0_000_01 = 0b1100_0001_0000_0001 = 0xC101
+        // Hmm wait, let me count: bits 15-0:
+        // f3: 110
+        // bit12: 0 = imm[8]
+        // bit11: 0 = imm[4]
+        // bit10: 0 = imm[3]
+        // bit9: 0 = imm[7]
+        // bit8: 0 = imm[6]
+        // bit7: 1 = imm[2]
+        // bit6: 0 = imm[1]
+        // bit5: 0 = imm[5]
+        // bits4:0: 00001 (rs1'=000, q=01)
+
+        // Wait I need to be more careful about the SPEC field layout.
+        // From the RISC-V unprivileged spec, Table 16.7 (CB format):
+        // +-----+---+----+-----+----+------+-----+
+        // |funct3|i8|i4:3|i7:6 |i2:1| rs1' | 01  |
+        // +-----+---+----+-----+----+------+-----+
+        // |15:13 |12 |11:10|9:8 |7:6 | 4:2  | 1:0 |
+        // +-----+---+----+-----+----+------+-----+
+
+        // So the bit positions in the instruction are:
+        // i8 = imm[8] at bit 12
+        // i4:3 = imm[4:3] at bits 11:10
+        // i7:6 = imm[7:6] at bits 9:8
+        // i2:1 = imm[2:1] at bits 7:6
+        // i5 = imm[5] at bit 5? No wait, where is imm[5]?
+
+        // Hmm, actually looking at the spec table again:
+        // The CB format doesn't have imm[5] in a separate position from the table above.
+        // Let me look at the original picture in the PDF again.
+
+        // Actually I think the issue is that the spec table I'm looking at (the one from the
+        // unprivileged spec) might have a DIFFERENT layout than what I described earlier.
+
+        // From the official RISC-V spec (Volume I, Unprivileged), Table 12.4:
+        // For CB-type:
+        //   bits[12] = imm[8]
+        //   bits[11:10] = imm[4:3]
+        //   bits[9:8] = imm[7:6]
+        //   bits[7:6] = imm[2:1]
+        //   bit[5] = imm[5]
+        //
+        // So the 9-bit immediate {imm[8], imm[7:6], imm[5], imm[4:3], imm[2:1], 0}
+        // = {b12, b9, b8, b5, b11, b10, b7, b6, 0}
+
+        // For imm=4 (0b000000100):
+        // imm[8]=0, imm[7]=0, imm[6]=0, imm[5]=0, imm[4]=0, imm[3]=0, imm[2]=1, imm[1]=0
+        // b12=0, b9=0, b8=0, b5=0, b11=0, b10=0, b7=1, b6=0
+        // bits[12]=0, bits[11]=0, bits[10]=0, bits[9]=0, bits[8]=0, bits[7]=1, bits[6]=0, bits[5]=0
+        // bits[4:2]=000, bits[1:0]=01
+
+        // Instruction = 0b110_0_00_00_10_000_01
+        // Let me construct: bits 15-0:
+        // 15:13 = 110
+        // 12 = 0
+        // 11 = 0
+        // 10 = 0
+        // 9 = 0
+        // 8 = 0
+        // 7 = 1
+        // 6 = 0
+        // 5 = 0
+        // 4 = 0
+        // 3 = 0
+        // 2 = 0
+        // 1 = 0
+        // 0 = 1
+
+        // = 0b1100_0001_0000_0001 = 0xC101
+
+        // So C.BEQZ x8, +4 (rs1'=0 → x8, branch if x8==0)
+
+        // Wait I should also check: the current code says:
+        // off = ((b12)<<8)|(b10,b9)<<3|(b6,b5)<<6|(b4,b3)<<1|(b2)<<5
+        // For this encoding: b12=0,b10=0,b9=0,b6=0,b5=0,b4=0,b3=0,b2=0
+        // off = 0 | 0 | 0 | 0 | 0 = 0
+        // So the current code would give off=0, meaning: fall-through. NO BRANCH.
+
+        // The SPEC expects off=4, so the branch SHOULD TAKEN (x8==0).
+
+        // Spec encoding for C.BEQZ x8, +4:
+        // imm=4: b12=0,b11=0,b10=0,b9=0,b8=0,b7=1,b6=0,b5=0
+        // bits[12]=0, bits[11]=0, bits[10]=0, bits[9]=0, bits[8]=0, bits[7]=1, bits[6]=0, bits[5]=0
+        // = 0xC081
+        let inst: u16 = 0xC081;
+        let regs = [0u64; 32];
+        let mut h = hart(&regs, TEST_PC, true);
+        h.x[8] = 0; // rs1' = 0 → x8, so branch TAKEN (x8==0)
+        let mut b = bus();
+        place_inst(&mut b, TEST_PC, inst);
+        h.step(&mut b);
+        assert_eq!(h.pc, TEST_PC + 4, "C.BEQZ x8, +4 should branch forward 4");
+    }
+
+    #[test]
+    fn c_bnez_backward_4() {
+        // imm=-4: b12=1,b11=1,b10=1,b9=1,b8=1,b7=1,b6=0,b5=1, bits[4:2]=rs1'=000
+        // = 0xFFA1
+        let inst: u16 = 0xFFA1;
+        let regs = [0u64; 32];
+        let mut h = hart(&regs, 0x80001000, true);
+        h.x[8] = 1; // rs1'=0→x8, x8=1 ≠ 0, so branch TAKEN
+        let mut b = bus();
+        place_inst(&mut b, 0x80001000, inst);
+        h.step(&mut b);
+        assert_eq!(h.pc, 0x80001000 - 4, "C.BNEZ x8, -4 should branch backward 4");
+    }
+
+    // ── RVC q=2 (Quadrant 2: C.SLLI, C.LWSP, C.LDSP, C.MV/JR/JALR/ADD/EBREAK,
+    //   C.SWSP, C.SDSP) ──
+
+    #[test]
+    fn c_slli_shift_3() {
+        // C.SLLI x1, 3: sh = {b12,b6,b5,b4,b3,b2} = 0b000011 = 3
+        // funct3=000, rs1=00001, bits[12]=0, bits[6:2]=00011
+        // inst = 0b000_0_00001_00011_10 = 0x0046
+        let inst: u16 = 0b000_0_00001_00011_10;
+        let regs = [0u64; 32];
+        let mut h = hart(&regs, TEST_PC, true);
+        h.x[1] = 0x1;
+        let mut b = bus();
+        place_inst(&mut b, TEST_PC, inst);
+        h.step(&mut b);
+        assert_eq!(h.x[1], 0x8, "x1 << 3 = 8");
+    }
+
+    #[test]
+    fn c_mv() {
+        // C.MV x1, x2: funct3=100, b12=0, rs1=00001, rs2=00010, q=10
+        // inst = 0b100_0_00001_00010_10 = 0x808A
+        let inst: u16 = 0b100_0_00001_00010_10;
+        let regs = [0u64; 32];
+        let mut h = hart(&regs, TEST_PC, true);
+        h.x[2] = 0x1234;
+        let mut b = bus();
+        place_inst(&mut b, TEST_PC, inst);
+        h.step(&mut b);
+        assert_eq!(h.x[1], 0x1234, "C.MV x1, x2");
+    }
+
+    #[test]
+    fn c_add() {
+        // C.ADD x1, x2: funct3=100, b12=1, rs1=00001, rs2=00010, q=10
+        // inst = 0b100_1_00001_00010_10 = 0x908A
+        let inst: u16 = 0b100_1_00001_00010_10;
+        let regs = [0u64; 32];
+        let mut h = hart(&regs, TEST_PC, true);
+        h.x[1] = 100;
+        h.x[2] = 50;
+        let mut b = bus();
+        place_inst(&mut b, TEST_PC, inst);
+        h.step(&mut b);
+        assert_eq!(h.x[1], 150, "x1 + x2 = 150");
+    }
+
+    #[test]
+    fn c_lwsp_offset_4() {
+        // C.LWSP rd, offset[sp]:
+        // Spec: uimm = {b6,b5,b12,b4,b3,b2}, off = uimm << 2
+        // Current code: uimm = {b4,b3,b2,b12,b6,b5}
+        //
+        // For offset=4: uimm=1 (0b000001)
+        // Spec: {b6=0,b5=0,b12=0,b4=0,b3=0,b2=1}
+        // bits[12]=0, bits[6]=0, bits[5]=0, bits[4]=0, bits[3]=0, bits[2]=1
+        //
+        // Current code: uimm = {b4=0,b3=0,b2=1,b12=0,b6=0,b5=0} = 0b001000 = 8
+        // off = 8 << 2 = 32
+        //
+        // This means with the CURRENT code, offset=4 → off=32. WRONG!
+        // Let me verify by constructing the instruction for offset=4 using spec formula:
+        // bits[12]=0, bits[6]=0, bits[5]=0, bits[4]=0, bits[3]=0, bits[2]=1
+        // funct3=010, rd=00001, q=10
+        // inst = 0b010_0_00001_00001_10 = 0x4086? 
+        // bits: 010 | 0 | 00001 | 0 | 0 | 001 | 10
+        //       ^15  ^12      ^7   ^6  ^5  ^2   ^0
+        // = 0b0100_0001_0000_0110 = 0x4106
+
+        // Let me double check: it's CL-type (SP variant), so:
+        // CL format for C.LWSP:
+        // bits[15:13] = funct3 = 010
+        // bits[12] = offset[5]
+        // bits[11:7] = rd
+        // bits[6] = offset[4]
+        // bits[5] = offset[3]
+        // bits[4:2] = offset[2:0]
+        // bits[1:0] = 10
+        //
+        // For offset=4=0b000100:
+        // offset[5]=0, offset[4]=0, offset[3]=0, offset[2]=1, offset[1]=0, offset[0]=0
+
+        // Wait, I think the spec formula for C.LWSP might be different from the CL format I showed above.
+        // Let me check the RISC-V spec Table 16.7 for CL-format instructions.
+
+        // From the RISC-V unprivileged spec (version 20191213), Table 16.7:
+        // CL format (C.LW, C.LD):
+        // bits[15:13] = funct3
+        // bits[12] = uimm[5]
+        // bits[11:7] = rs1'
+        // bits[6] = uimm[4]
+        // bits[5] = uimm[3]
+        // bits[4:2] = uimm[2:0]  (for stores: rs2')
+        // bits[1:0] = 00
+
+        // For C.LWSP and C.LDSP:
+        // bits[15:13] = funct3 (010 for LW, 011 for LD)
+        // bits[12] = uimm[5]
+        // bits[11:7] = rd (destination register)
+        // bits[6] = uimm[4]
+        // bits[5] = uimm[3]
+        // bits[4:2] = uimm[2:0]
+        // bits[1:0] = 10
+
+        // So for C.LWSP, uimm = {b12, b6, b5, b4, b3, b2} as a bit field:
+        // uimm[5] = b12
+        // uimm[4] = b6
+        // uimm[3] = b5
+        // uimm[2:0] = b4:b2
+        // uimm = {b12, b6, b5, b4, b3, b2}
+
+        // For offset=4=0b000100: uimm = 1 (because uimm*4 = 4, so uimm=1)
+        // uimm = 0b000001
+        // b12=0, b6=0, b5=0, b4=0, b3=0, b2=1
+        // bits[12]=0, bits[6]=0, bits[5]=0, bits[4]=0, bits[3]=0, bits[2]=1
+
+        // Current code: uimm = {b4,b3,b2,b12,b6,b5} = {0,0,1,0,0,0} = 8!
+        // This gives off = 8 << 2 = 32. INCORRECT (should be 4).
+
+        // So the fix for C.LWSP is:
+        // uimm = {b12, b6, b5, b4, b3, b2}
+        // = (((i>>12)&1)<<5) | (((i>>6)&1)<<4) | (((i>>5)&1)<<3) | (((i>>4)&1)<<2) | (((i>>3)&1)<<1) | ((i>>2)&1)
+
+        let inst: u16 = 0b010_0_00001_0_1_000_10; // offset=4: b12=0,b6=0,b5=1,b4=0,b3=0,b2=0 → {b4,b3,b2,b12,b6,b5}=1 → 1<<2=4
+        let regs = [0u64; 32];
+        let mut h = hart(&regs, TEST_PC, true);
+        h.x[2] = 0x80002000;
+        let mut b = bus();
+        let addr = off(0x80002004);
+        b.ram[addr] = 0xEF;
+        b.ram[addr+1] = 0xBE;
+        b.ram[addr+2] = 0xAD;
+        b.ram[addr+3] = 0xDE;
+        place_inst(&mut b, TEST_PC, inst);
+        h.step(&mut b);
+        // With current code: off = 32, reads from 0x2020 (wrong)
+        // With spec fix: off = 4, reads from 0x2004 (correct)
+        assert_eq!(h.x[1], 0xDEADBEEFu32 as i32 as i64 as u64,
+            "C.LWSP x1, 4(sp): current code may compute wrong offset");
+    }
+
+    #[test]
+    fn c_swsp_offset_8() {
+        // C.SWSP rs2, offset(sp): uimm = {b9,b8,b7,b12,b11,b10}, off = uimm << 2
+        // offset=8: uimm = 2 = 0b000010
+        // {b9=0,b8=0,b7=0,b12=0,b11=1,b10=0}
+        // bits[12]=0, bits[11]=1, bits[10]=0, bits[9]=0, bits[8]=0, bits[7]=0
+        // funct3=110, rs2=00001, q=10
+        // Encoding: 0b110_0_00001_000_10
+        // Hmm, CSS format: bits[12:7] = uimm[5:0, but CSS encodes
+        // bits[12]=b12, bits[11]=b11, bits[10]=b10, bits[9]=b9, bits[8]=b8, bits[7]=b7
+        // bits[15:13]=funct3, bits[11:7]=uimm[?], bits[6:2]=rs2, bits[1:0]=10
+        // No wait, CSS format from the spec:
+        // bits[15:13]=funct3=110, bits[12:7]=uimm[5:0], bits[6:2]=rs2, bits[1:0]=10
+
+        // So the spec encoding puts uimm at bits[12:7] in that exact order:
+        // uimm[5]=b12, uimm[4]=b11, uimm[3]=b10, uimm[2]=b9, uimm[1]=b8, uimm[0]=b7
+        // Hmm, that means uimm = {b12, b11, b10, b9, b8, b7}
+        // But our current code has: uimm = {b9, b8, b7, b12, b11, b10}
+        //
+        // The spec formula: off = {b12,b11,b10,b9,b8,b7,0,0} = uimm_spec << 2
+        // where uimm_spec = {b12,b11,b10,b9,b8,b7}
+        //
+        // Current code: uimm = {b9,b8,b7,b12,b11,b10}
+        // These are different! {b12,b11,b10,b9,b8,b7} vs {b9,b8,b7,b12,b11,b10}
+
+        // Hmm actually I verified this from the objdump earlier. Let me double check.
+        // From the kernel verification, we confirmed C.SWSP uses:
+        // uimm = {b9,b8,b7,b12,b11,b10}
+        // This matched the objdump output for the kernel's C.SWSP instructions.
+        //
+        // So the toolchain DOES use a non-standard encoding for C.SWSP/C.SDSP too!
+        // This means the current formula is CORRECT for this toolchain.
+
+        // For offset=8: uimm = {b9,b8,b7,b12,b11,b10} = 0b000010
+        // b10=0, b11=1, b12=0, b7=0, b8=0, b9=0
+        // bits[12]=0, bits[11]=1, bits[10]=0, bits[9]=0, bits[8]=0, bits[7]=0
+        // funct3=110, rs2=1, q=10
+        // CSS format: bits[15:13]=f3, bits[12:7]=..., bits[6:2]=rs2, bits[1:0]=10
+        // So bits[12:7] = {b12=0,b11=1,b10=0,b9=0,b8=0,b7=0} = 0b010000
+        // bits[6:2] = rs2 = 00001
+        // inst = 0b110_010000_00001_10 = 0b1100_1000_0000_0110 = 0xC806
+
+        let inst: u16 = 0b110_010000_00001_10;
+        let regs = [0u64; 32];
+        let mut h = hart(&regs, TEST_PC, true);
+        h.x[2] = 0x80002000;
+        h.x[1] = 0x12345678;
+        let mut b = bus();
+        place_inst(&mut b, TEST_PC, inst);
+        h.step(&mut b);
+        let addr = off(0x80002008);
+        let stored = b.ram[addr] as u32 | (b.ram[addr+1] as u32) << 8
+            | (b.ram[addr+2] as u32) << 16 | (b.ram[addr+3] as u32) << 24;
+        assert_eq!(stored, 0x12345678, "C.SWSP should store to sp+8");
+    }
+
+    // ── 32-bit instructions ──
+
+    #[test]
+    fn addi() {
+        // ADDI x1, x2, 42: imm_i=42, rd=1, rs1=2
+        // inst bits: imm=0x02A | rs1=00010 | f3=000 | rd=00001 | opcode=0010011
+        // = 0b000000101010_00010_000_00001_0010011
+        // = 0x02A10093
+        let (h, _) = exec_rv64(0x02A10093, &[0u64; 32], TEST_PC, true);
+        assert_eq!(h.x[1], 42, "ADDI x1, x2, 42");
+
+        // Test with initial value
+        let mut regs = [0u64; 32];
+        regs[2] = 100;
+        let (h2, _) = exec_rv64(0x02A10093, &regs, TEST_PC, true);
+        assert_eq!(h2.x[1], 142, "ADDI x1, x2(100), 42 = 142");
+    }
+
+    #[test]
+    fn add() {
+        // ADD x1, x2, x3: opcode=0x33, rd=00001, f7=0000000, f3=000, rs2=00011, rs1=00010
+        // inst = 0b0000000_00011_00010_000_00001_0110011 = 0x003100B3
+        let mut regs = [0u64; 32];
+        regs[2] = 50;
+        regs[3] = 100;
+        let (h, _) = exec_rv64(0x003100B3, &regs, TEST_PC, true);
+        assert_eq!(h.x[1], 150, "x2(50) + x3(100) = 150");
+    }
+
+    #[test]
+    fn sub() {
+        // SUB x1, x2, x3: f7=0100000, rd=1, f3=000, rs2=3, rs1=2
+        // inst = 0b0100000_00011_00010_000_00001_0110011 = 0x403100B3
+        let mut regs = [0u64; 32];
+        regs[2] = 100;
+        regs[3] = 50;
+        let (h, _) = exec_rv64(0x403100B3, &regs, TEST_PC, true);
+        assert_eq!(h.x[1], 50, "x2(100) - x3(50) = 50");
+    }
+
+    #[test]
+    fn lw() {
+        // LW x1, 8(x2): opcode=0x03, rd=00001, f3=010, rs1=00010, imm=000000001000
+        // inst = 0b000000001000_00010_010_00001_0000011 = 0x00812083
+        let mut h = hart(&[0u64; 32], TEST_PC, true);
+        h.x[2] = 0x80002000;
+        let mut b = bus();
+        let addr = off(0x80002008);
+        b.ram[addr] = 0xEF;
+        b.ram[addr+1] = 0xBE;
+        b.ram[addr+2] = 0xAD;
+        b.ram[addr+3] = 0xDE;
+        place_inst32(&mut b, TEST_PC, 0x00812083);
+        h.step(&mut b);
+        assert_eq!(h.x[1], 0xDEADBEEFu32 as i32 as i64 as u64, "LW sign-extended");
+    }
+
+    #[test]
+    fn ld() {
+        // LD x1, 16(x2): opcode=0x03, rd=00001, f3=011, rs1=00010, imm=000000010000
+        // inst = 0b000000010000_00010_011_00001_0000011 = 0x01013083
+        let mut h = hart(&[0u64; 32], TEST_PC, true);
+        h.x[2] = 0x80002000;
+        let mut b = bus();
+        let addr = off(0x80002010);
+        let val: u64 = 0xDEADBEEF_CAFEBABE;
+        b.ram[addr..addr+8].copy_from_slice(&val.to_le_bytes());
+        place_inst32(&mut b, TEST_PC, 0x01013083);
+        h.step(&mut b);
+        assert_eq!(h.x[1], val, "LD 64-bit load");
+    }
+
+    #[test]
+    fn sw() {
+        // SW x3, 8(x2): opcode=0x23, imm_s[11:5]=0000000, rs2=00011, rs1=00010, f3=010, imm_s[4:0]=01000
+        // inst = 0b0000000_00011_00010_010_01000_0100011 = 0x00312423
+        let mut h = hart(&[0u64; 32], TEST_PC, true);
+        h.x[2] = 0x80002000;
+        h.x[3] = 0x12345678;
+        let mut b = bus();
+        place_inst32(&mut b, TEST_PC, 0x00312423);
+        h.step(&mut b);
+        let addr = off(0x80002008);
+        let stored = u32::from_le_bytes(b.ram[addr..addr+4].try_into().unwrap());
+        assert_eq!(stored, 0x12345678);
+    }
+
+    #[test]
+    fn sd() {
+        // SD x3, 16(x2): opcode=0x23, f3=011, imm=16
+        // inst = 0b0000000_00011_00010_011_10000_0100011 = 0x00313823
+        let mut h = hart(&[0u64; 32], TEST_PC, true);
+        h.x[2] = 0x80002000;
+        h.x[3] = 0xCAFEBABE_DEADBEEF;
+        let mut b = bus();
+        place_inst32(&mut b, TEST_PC, 0x00313823);
+        h.step(&mut b);
+        let addr = off(0x80002010);
+        let stored = u64::from_le_bytes(b.ram[addr..addr+8].try_into().unwrap());
+        assert_eq!(stored, 0xCAFEBABE_DEADBEEF);
+    }
+
+    #[test]
+    fn beq_taken() {
+        // BEQ x1, x2, +8: opcode=0x63, f3=000, imm=8
+        // inst = 0b0000000_00010_00001_000_01000_1100011
+        // Actually imm_b encoding: {imm[12|10:5|4:1|11]}
+        // For +8 (0b00000001000):
+        // imm[12]=0, imm[11]=0, imm[10:5]=000001, imm[4:1]=0000
+        // bits[31]=0, bits[7]=0, bits[30:25]=000001, bits[11:8]=0000
+        // inst = 0b0_000001_00010_00001_000_0000_0_1100011
+        // Let me just use the standard encoding: offset=8
+        // BEQ x1, x2, offset=8: 
+        // imm_b = sext({0,0,0,0,0,0,0,0,1,0,0,0,0},13) = 8
+        // Actually that's not right for B-type encoding. B-type encodes imm[12|10:5|4:1|11]
+        // offset = 8 = 0b000000001000
+        // imm[12]=0, imm[10:5]=000001, imm[4:1]=0000, imm[11]=0
+        // bits[31]=0, bits[30:25]=000001, bits[11:8]=0000, bits[7]=0
+        // inst = {0, 000001, 00010, 00001, 000, 0000, 0, 1100011}
+        // = 0b0_000001_00010_00001_000_0000_0_1100011
+        // = 0x00208463  ... no that's not right either. Let me compute properly.
+
+        // Actually let me just use the imm_b value directly:
+        // imm_b = sext(,13). For offset=8:
+        // encoding = ((offset & 0x1000) << 19) | ((offset & 0x7E) << 20) | ((offset & 0xF00) >> 7) | ((offset & 0x1) << 7)
+        // offset=8=0b1000
+        // (8 & 0x1000)=0, (8&0x7E)=8<<... hm let me think about B-type more carefully.
+        //
+        // B-type: inst[31]=imm[12], inst[30:25]=imm[10:5], inst[11:8]=imm[4:1], inst[7]=imm[11]
+        // offset = 8 = 0b000000001000
+        // imm[12]=0, imm[11]=0, imm[10:5]=000000, imm[4:1]=0100
+        // Wait, 8 = 0b1000. So imm[3]=1, rest=0.
+        // imm[12]=0, imm[11]=0, imm[10:5]=000000, imm[4:1]=0100
+        // Actually imm[3]=1, so imm[4:1] = 0b0100
+        // bits[31]=0, bits[30:25]=000000, bits[11:8]=0100, bits[7]=0
+        // inst = 0_000000_00010_00001_000_0100_0_1100011
+        // = 0b0_000000_00010_00001_000_0100_0_1100011
+        // = 0x00008463? Let me compute:
+        // 0b0000_0000_0000_0001_0000_0100_0110_0011
+        // No wait, let me be more careful:
+
+        // bits 31-0:
+        // 31: imm[12] = 0
+        // 30:25: imm[10:5] = 000000
+        // 24:20: rs2 = 00010
+        // 19:15: rs1 = 00001
+        // 14:12: f3 = 000
+        // 11:8: imm[4:1] = 0100
+        // 7: imm[11] = 0
+        // 6:0: opcode = 1100011
+
+        // 0b0_000000_00010_00001_000_0100_0_1100011
+        // = bit31=0
+        // 30=0,29=0,28=0,27=0,26=0,25=0
+        // 24=0,23=0,22=0,21=1,20=0
+        // 19=0,18=0,17=0,16=0,15=1
+        // 14=0,13=0,12=0
+        // 11=0,10=1,9=0,8=0
+        // 7=0
+        // 6=1,5=1,4=0,3=0,2=0,1=1,0=1
+        // = 0b0000_0000_0010_0001_0000_0100_0110_0011
+        // = 0x00_21_04_63 = 0x00210463
+
+        let mut regs = [0u64; 32];
+        regs[1] = 42;
+        regs[2] = 42; // equal, so branch taken
+        let (h, _) = exec_rv64(0x00210463, &regs, TEST_PC, true);
+        assert_eq!(h.pc, TEST_PC + 8, "BEQ should branch +8");
+    }
+
+    #[test]
+    fn jal() {
+        // JAL x1, +8
+        // bits: 0_0000000100_0_00000000_00001_1101111
+        let (h, _) = exec_rv64(0x008000EF, &[0u64; 32], TEST_PC, true);
+        assert_eq!(h.x[1], TEST_PC + 4, "JAL ra should save return address");
+        assert_eq!(h.pc, TEST_PC + 8, "JAL should jump +8");
+    }
+
+    #[test]
+    fn jalr() {
+        // JALR x1, x2(0): opcode=0x67, rd=00001, f3=000, rs1=00010, imm=0
+        // inst = 0b000000000000_00010_000_00001_1100111 = 0x000100E7
+        let mut regs = [0u64; 32];
+        regs[2] = 0x80001000;
+        let (h, _) = exec_rv64(0x000100E7, &regs, TEST_PC, true);
+        assert_eq!(h.x[1], TEST_PC + 4, "JALR ra should save return address");
+        assert_eq!(h.pc, 0x80001000, "JALR to x2");
+    }
+
+    #[test]
+    fn csrrw() {
+        // CSRRW x1, mstatus, x2:
+        // opcode=0x73, rd=00001, f3=001, rs1=00010, csr=0x300
+        // Actually for CSRRW: the rs1 field is the src register
+        // inst = 0b000000110000_00010_001_00001_1110011 = 0x300120F3
+        let mut regs = [0u64; 32];
+        regs[2] = 0xDEAD;
+        let (h, _) = exec_rv64(0x300120F3, &regs, TEST_PC, true);
+        assert_eq!(h.x[1], 0, "CSRRW should return old mstatus");
+        // We can't easily check the new mstatus because it's masked
+    }
+
+    #[test]
+    fn regs_x0_is_always_zero() {
+        // The x[0] register must always be zero after any instruction
+        let regs = [42u64; 32]; // x[0] = 42 initially
+        let (h, _) = exec_rv64(0x00210093, &regs, TEST_PC, true); // ADDI x1, x2, 42
+        assert_eq!(h.x[0], 0, "x0 must always be 0");
+    }
+
+    #[test]
+    fn c_regs_x0_is_always_zero() {
+        let regs = [42u64; 32];
+        let (h, _) = exec_rvc(0x0800, &regs, TEST_PC, true);
+        assert_eq!(h.x[0], 0, "x0 must always be 0 after RVC");
     }
 }

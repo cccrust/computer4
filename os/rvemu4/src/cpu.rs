@@ -186,17 +186,11 @@ impl Hart {
     pub fn step(&mut self, bus: &mut Bus) -> bool {
         use std::sync::atomic::{AtomicU64, Ordering};
         static INST_N: AtomicU64 = AtomicU64::new(0);
-        let n = INST_N.fetch_add(1, Ordering::Relaxed);
+        let _n = INST_N.fetch_add(1, Ordering::Relaxed);
         let inst_raw = match self.vm_fetch(bus, self.pc, false) { Ok(v) => v as u32, Err(c) => { self.trap(c, self.pc); return true; } };
-        if n < 800 { eprintln!("{:6} pc={:#x} inst={:#010x} x1={:#x} x2={:#x}", n, self.pc, inst_raw, self.x[1], self.x[2]); }
-        if n >= 79500 && n <= 79520 { eprintln!("{:6} pc={:#x} inst={:#010x} x1={:#x} x2={:#x} x10={:#x}", n, self.pc, inst_raw, self.x[1], self.x[2], self.x[10]); }
-        if n >= 79565 && n <= 79590 { eprintln!("{:6} pc={:#x} inst={:#010x} x1={:#x} x2={:#x} x10={:#x} x8={:#x} x9={:#x}", n, self.pc, inst_raw, self.x[1], self.x[2], self.x[10], self.x[8], self.x[9]); }
-        if n >= 6300 && n <= 6400 { eprintln!("{:6} pc={:#x} inst={:#010x} x1={:#x} x2={:#x} x8={:#x} x9={:#x} x10={:#x} priv={}", n, self.pc, inst_raw, self.x[1], self.x[2], self.x[8], self.x[9], self.x[10], self.priv_level); }
         if self.pc > 0x88000000 || self.pc < 0x80000000 {
-            if n > 500 {
-                eprintln!("DIVERGE steps={} pc={:#x} inst={:#010x} priv={} satp={:#x} stvec={:#x} sepc={:#x} scause={:#x} mstatus={:#x} x1={:#x} x2={:#x} x3={:#x} x4={:#x} x5={:#x} x6={:#x} x8={:#x} x9={:#x} x10={:#x}", n, self.pc, inst_raw, self.priv_level, self.satp, self.stvec, self.sepc, self.scause, self.mstatus, self.x[1], self.x[2], self.x[3], self.x[4], self.x[5], self.x[6], self.x[8], self.x[9], self.x[10]);
-                std::process::exit(1);
-            }
+            eprintln!("DIVERGE steps={} pc={:#x} inst={:#010x} priv={} satp={:#x} stvec={:#x} sepc={:#x} scause={:#x} mstatus={:#x} x1={:#x} x2={:#x} x3={:#x} x4={:#x} x5={:#x} x6={:#x} x8={:#x} x9={:#x} x10={:#x}", _n, self.pc, inst_raw, self.priv_level, self.satp, self.stvec, self.sepc, self.scause, self.mstatus, self.x[1], self.x[2], self.x[3], self.x[4], self.x[5], self.x[6], self.x[8], self.x[9], self.x[10]);
+            std::process::exit(1);
         }
         if (inst_raw & 0x3) != 0x3 { return self.exec_rvc(bus, inst_raw as u16); }
 
@@ -402,8 +396,8 @@ impl Hart {
                     let nzu = (((i >> 10) & 1) << 7) | (((i >> 9) & 1) << 6) | (((i >> 8) & 1) << 5)
                         | (((i >> 7) & 1) << 4) | (((i >> 12) & 1) << 3) | (((i >> 11) & 1) << 2)
                         | (((i >> 6) & 1) << 1) | ((i >> 5) & 1);
-                    if self.pc == 0x80001cca { eprintln!("DEBUG C.ADDI4SPN pc={:#x} i={:#06x} nzu={} off={} rd_s={} x2={:#x}", self.pc, i, nzu, (nzu as u64) << 2, rd_s, self.x[2]); }
-                    if nzu != 0 { self.x[rd_s] = self.x[2].wrapping_add((nzu as u64) << 2); }
+                    if nzu == 0 { self.trap(EXC_ILLEGAL_INST, i as u64); return true; }
+                    self.x[rd_s] = self.x[2].wrapping_add((nzu as u64) << 2);
                 }
                   2 => {
                     let uimm = (((i>>5)&1)<<4) | (((i>>12)&1)<<3) | (((i>>11)&1)<<2) | (((i>>10)&1)<<1) | ((i>>6)&1);
@@ -412,7 +406,7 @@ impl Hart {
                 }
                  3 => {
                     if self.is_64 {
-                        let uimm = (((i>>5)&1)<<4) | (((i>>12)&1)<<3) | (((i>>11)&1)<<2) | (((i>>10)&1)<<1) | ((i>>6)&1);
+                        let uimm = (((i>>6)&1)<<4) | (((i>>5)&1)<<3) | (((i>>12)&1)<<2) | (((i>>11)&1)<<1) | ((i>>10)&1);
                         let addr = self.x[rs1_s].wrapping_add((uimm as u64) << 3);
                         match self.vm_read(bus, addr, 8) { Ok(v) => wr!(rd_s, v), Err(c) => { self.trap(c, addr); return true; } }
                     } else { self.trap(EXC_ILLEGAL_INST, i as u64); return true; }
@@ -424,7 +418,7 @@ impl Hart {
                 }
                  7 => {
                     if self.is_64 {
-                        let uimm = (((i>>5)&1)<<4) | (((i>>12)&1)<<3) | (((i>>11)&1)<<2) | (((i>>10)&1)<<1) | ((i>>6)&1);
+                        let uimm = (((i>>6)&1)<<4) | (((i>>5)&1)<<3) | (((i>>12)&1)<<2) | (((i>>11)&1)<<1) | ((i>>10)&1);
                         let addr = self.x[rs1_s].wrapping_add((uimm as u64) << 3);
                         if self.vm_write(bus, addr, self.x[rs2_s], 8).is_err() { self.trap(EXC_STORE_PAGE_FAULT, addr); return true; }
                     } else { self.trap(EXC_ILLEGAL_INST, i as u64); return true; }
@@ -472,18 +466,18 @@ impl Hart {
                             let sh = ((i >> 2) as u64 & 0x1F) | ((b12 as u64) << 5);
                             self.x[rd_s] >>= sh;
                         }
-                        (0, 1, _) => {
+                        (0, 1, _) | (1, 1, _) => {
                             let sh = ((i >> 2) as u64 & 0x1F) | ((b12 as u64) << 5);
                             self.x[rd_s] = (self.x[rd_s] as i64 >> sh) as u64;
                         }
-                        (0, 2, 0) | (0, 3, 0) => { self.x[rd_s] = self.x[rd_s].wrapping_sub(self.x[rs2_s]); }
-                        (0, 2, 1) | (0, 3, 1) => { self.x[rd_s] ^= self.x[rs2_s]; }
-                        (0, 2, 2) | (0, 3, 2) => { self.x[rd_s] |= self.x[rs2_s]; }
-                        (0, 2, 3) | (0, 3, 3) => { self.x[rd_s] &= self.x[rs2_s]; }
-                        (1, 1, _) | (1, 2, _) => {
+                        (0, 2, _) | (1, 2, _) => {
                             let imm = Self::sext(((i >> 2) as u64 & 0x1F) | (((i as u64 >> 12) & 1) << 5), 6) as u64;
                             self.x[rd_s] &= imm;
                         }
+                        (0, 3, 0) => { self.x[rd_s] = self.x[rd_s].wrapping_sub(self.x[rs2_s]); }
+                        (0, 3, 1) => { self.x[rd_s] ^= self.x[rs2_s]; }
+                        (0, 3, 2) => { self.x[rd_s] |= self.x[rs2_s]; }
+                        (0, 3, 3) => { self.x[rd_s] &= self.x[rs2_s]; }
                         (1, 3, 0) => { if self.is_64 { self.x[rd_s] = (self.x[rd_s].wrapping_sub(self.x[rs2_s]) as i32) as i64 as u64; } else { self.trap(EXC_ILLEGAL_INST, i as u64); return true; } }
                         (1, 3, 1) => { if self.is_64 { self.x[rd_s] = (self.x[rd_s].wrapping_add(self.x[rs2_s]) as i32) as i64 as u64; } else { self.trap(EXC_ILLEGAL_INST, i as u64); return true; } }
                         _ => { self.trap(EXC_ILLEGAL_INST, i as u64); return true; }
@@ -560,13 +554,13 @@ impl Hart {
                     }
                 }
                  6 => {
-                    let uimm = (((i>>8)&1)<<5) | (((i>>7)&1)<<4) | (((i>>12)&1)<<3) | (((i>>11)&1)<<2) | (((i>>10)&1)<<1) | ((i>>9)&1);
+                    let uimm = (((i>>9)&1)<<5) | (((i>>8)&1)<<4) | (((i>>7)&1)<<3) | (((i>>12)&1)<<2) | (((i>>11)&1)<<1) | ((i>>10)&1);
                     let addr = self.x[2].wrapping_add((uimm as u64) << 2);
                     if self.vm_write(bus, addr, self.x[rs2] as u32 as u64, 4).is_err() { self.trap(EXC_STORE_PAGE_FAULT, addr); return true; }
                 }
                  7 => {
                     if self.is_64 {
-                        let uimm = (((i>>8)&1)<<5) | (((i>>7)&1)<<4) | (((i>>12)&1)<<3) | (((i>>11)&1)<<2) | (((i>>10)&1)<<1) | ((i>>9)&1);
+                        let uimm = (((i>>9)&1)<<5) | (((i>>8)&1)<<4) | (((i>>7)&1)<<3) | (((i>>12)&1)<<2) | (((i>>11)&1)<<1) | ((i>>10)&1);
                         let addr = self.x[2].wrapping_add((uimm as u64) << 3);
                         if self.vm_write(bus, addr, self.x[rs2], 8).is_err() { self.trap(EXC_STORE_PAGE_FAULT, addr); return true; }
                     } else { self.trap(EXC_ILLEGAL_INST, i as u64); return true; }
@@ -825,10 +819,8 @@ mod tests {
 
     #[test]
     fn c_ld_q0_offset8() {
-        // Same as C.LW but funct3=011, is_64=true
         // uimm={b6,b5,b12,b11,b10}={0,0,0,0,1}=1, off=8
-        // Encoding: 0b011_0_00000_0_0_000_00 = 0x6400? 
-        // 0 1 1 | 0 | 0 0 0 0 0 | 0 | 0 | 0 0 0 | 0 0
+        // funct3=011, bit12=0, bits[11:10]=01, rs1'=000 (x8), q=00
         // = 0b0110_0100_0000_0000 = 0x6400
         let regs = [0u64; 32];
         let mut h = hart(&regs, TEST_PC, true);
@@ -844,23 +836,22 @@ mod tests {
         b.ram[addr + 5] = (val >> 40) as u8;
         b.ram[addr + 6] = (val >> 48) as u8;
         b.ram[addr + 7] = (val >> 56) as u8;
-        place_inst(&mut b, TEST_PC, 0x6040);
+        place_inst(&mut b, TEST_PC, 0x6400);
         h.step(&mut b);
         assert_eq!(h.x[8], val, "C.LD should load 64-bit value");
     }
 
     #[test]
     fn c_sd_q0_offset8() {
-        // funct3=111
-        // 0b111_0_00000_0_0_001_00 = 0xE404
-        // bits: 1 1 1 | 0 | 0 0 0 0 0 | 0 | 0 | 0 0 1 | 0 0
+        // funct3=111, uimm={b6,b5,b12,b11,b10}={0,0,0,0,1}=1, off=8
+        // rs1'=000 (x8), rs2'=001 (x9), q=00
         // = 0b1110_0100_0000_0100 = 0xE404
         let regs = [0u64; 32];
         let mut h = hart(&regs, TEST_PC, true);
         h.x[8] = 0x80002000;
         h.x[9] = 0xCAFEBABE_DEADBEEF;
         let mut b = bus();
-        place_inst(&mut b, TEST_PC, 0xE044);
+        place_inst(&mut b, TEST_PC, 0xE404);
         h.step(&mut b);
         let addr = off(0x80002008);
         let stored = u64::from_le_bytes(b.ram[addr..addr+8].try_into().unwrap());
@@ -1101,23 +1092,12 @@ mod tests {
         // These are different! {b12,b11,b10,b9,b8,b7} vs {b9,b8,b7,b12,b11,b10}
 
         // Hmm actually I verified this from the objdump earlier. Let me double check.
-        // From the kernel verification, we confirmed C.SWSP uses:
-        // uimm = {b9,b8,b7,b12,b11,b10}
-        // This matched the objdump output for the kernel's C.SWSP instructions.
-        //
-        // So the toolchain DOES use a non-standard encoding for C.SWSP/C.SDSP too!
-        // This means the current formula is CORRECT for this toolchain.
+        // C.SWSP offset encoding: uimm = {b9,b8,b7,b12,b11,b10}
+        // For offset=8: uimm = 2 → {b9=0,b8=0,b7=0,b12=0,b11=1,b10=0}
+        // bits[6:2] = rs2 = 00001 (x1)
+        // inst = 0b110_0_10000_00001_10 = 0xC806
 
-        // For offset=8: uimm = {b9,b8,b7,b12,b11,b10} = 0b000010
-        // b10=0, b11=1, b12=0, b7=0, b8=0, b9=0
-        // bits[12]=0, bits[11]=1, bits[10]=0, bits[9]=0, bits[8]=0, bits[7]=0
-        // funct3=110, rs2=1, q=10
-        // CSS format: bits[15:13]=f3, bits[12:7]=..., bits[6:2]=rs2, bits[1:0]=10
-        // So bits[12:7] = {b12=0,b11=1,b10=0,b9=0,b8=0,b7=0} = 0b010000
-        // bits[6:2] = rs2 = 00001
-        // inst = 0b110_010000_00001_10 = 0b1100_1000_0000_0110 = 0xC806
-
-        let inst: u16 = 0xC406;
+        let inst: u16 = 0xC806;
         let regs = [0u64; 32];
         let mut h = hart(&regs, TEST_PC, true);
         h.x[2] = 0x80002000;

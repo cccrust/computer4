@@ -91,7 +91,7 @@ impl Hart {
             CSR_SEPC => self.sepc = val, CSR_SCAUSE => self.scause = val,
             CSR_STVAL => self.stval = val,
             CSR_SIP => self.mip = (self.mip & !self.mideleg) | (val & self.mideleg),
-            CSR_SATP => { self.satp = val; } CSR_STIMECMP => self.stimecmp = val,
+            CSR_SATP => self.satp = val, CSR_STIMECMP => self.stimecmp = val,
             _ => {}
         }
     }
@@ -142,7 +142,6 @@ impl Hart {
     }
 
     pub fn trap(&mut self, cause: u64, tval: u64) {
-        if self.pc > 0x88000000 || self.pc < 0x80000000 { eprintln!("TRAP pc={:#x} cause={:#x} tval={:#x} priv={} satp={:#x} stvec={:#x} mstatus={:#x} sepc={:#x}", self.pc, cause, tval, self.priv_level, self.satp, self.stvec, self.mstatus, self.sepc); }
         let is_int = (cause >> 63) != 0; let code = cause & 0x7FFFFFFFFFFFFFFF;
         let deleg = self.priv_level <= PRV_S && (if is_int { (self.mideleg >> code) & 1 != 0 } else { (self.medeleg >> code) & 1 != 0 });
         if deleg {
@@ -335,7 +334,8 @@ impl Hart {
                     let spp = ((self.mstatus >> 8) & 1) as u8;
                     self.mstatus = if self.mstatus & (1<<5) != 0 { self.mstatus | (1<<1) } else { self.mstatus & !(1<<1) };
                     self.mstatus |= 1<<5; self.mstatus &= !(1<<8); self.priv_level = if spp != 0 { PRV_S } else { PRV_U }; npc = self.sepc;
-                } else if inst_raw == 0x10500073 || inst_raw == 0x12000073 {}
+                } else if inst_raw == 0x10500073 { npc = self.pc; }
+                else if inst_raw == 0x12000073 {}
                 else if f3 != 0 {
                     let csr_num = (inst_raw >> 20) & 0xFFF;
                     let old = self.csr_read(csr_num);

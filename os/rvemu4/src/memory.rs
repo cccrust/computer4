@@ -15,11 +15,11 @@ const CLINT_SIZE: u64 = 0x10000;
 pub struct Uart {
     ier: u8, lcr: u8,
     rx_buf: [u8; 256], rx_head: usize, rx_tail: usize,
-    tx_pending: bool,
+    tx_pending: bool, pending_tx_irq: bool,
 }
 impl Uart {
     pub fn new() -> Self {
-        Self { ier: 0, lcr: 0, rx_buf: [0; 256], rx_head: 0, rx_tail: 0, tx_pending: false }
+        Self { ier: 0, lcr: 0, rx_buf: [0; 256], rx_head: 0, rx_tail: 0, tx_pending: false, pending_tx_irq: false }
     }
     pub fn push_rx(&mut self, c: u8) {
         let n = (self.rx_tail + 1) % 256;
@@ -29,6 +29,8 @@ impl Uart {
     pub fn has_irq(&self) -> bool {
         (self.rx_ready() && (self.ier & 1) != 0) || (self.tx_pending && (self.ier & 2) != 0)
     }
+    pub fn needs_pending(&self) -> bool { self.pending_tx_irq }
+    pub fn clear_pending_tx_irq(&mut self) { self.pending_tx_irq = false; }
     pub fn read(&mut self, off: u64) -> u8 {
         match off {
             0 => {
@@ -42,7 +44,7 @@ impl Uart {
             1 => self.ier,
             2 => {
                 if self.rx_ready() && (self.ier & 1) != 0 { 4 }
-                else if self.tx_pending && (self.ier & 2) != 0 { self.tx_pending = false; 2 }
+                else if self.tx_pending && (self.ier & 2) != 0 { self.tx_pending = false; self.pending_tx_irq = false; 2 }
                 else { 1 }
             }
             3 => self.lcr,
@@ -58,6 +60,7 @@ impl Uart {
                 use std::io::Write;
                 std::io::stdout().flush().ok();
                 self.tx_pending = true;
+                if (self.ier & 2) != 0 { self.pending_tx_irq = true; }
             }
             1 => self.ier = val,
             3 => self.lcr = val,
@@ -283,7 +286,7 @@ impl Bus {
                 0x030 => self.vblk.queue_sel = val,
                 0x038 => self.vblk.queue_num = val,
                 0x044 => self.vblk.queue_ready = val,
-                0x050 => { self.vblk.process_queue(&mut self.ram); self.plic.set_pending(1); }
+                0x050 => { if self.vblk.process_queue(&mut self.ram) { self.plic.set_pending(1); } }
                 0x064 => self.vblk.interrupt_status &= !val,
                 0x070 => self.vblk.status = val,
                 0x080 => self.vblk.queue_desc = (self.vblk.queue_desc & 0xFFFFFFFF00000000) | val as u64,
@@ -332,6 +335,10 @@ impl Bus {
     }
 
     pub fn uart_has_irq(&self) -> bool { self.uart.has_irq() }
+    pub fn uart_needs_pending(&self) -> bool { self.uart.needs_pending() }
+    pub fn uart_clear_pending_tx_irq(&mut self) { self.uart.clear_pending_tx_irq(); }
+    pub fn uart_rx_ready(&self) -> bool { self.uart.rx_ready() }
+    pub fn uart_ier(&self) -> u8 { self.uart.ier }
     pub fn clear_reservations(&mut self, addr: u64) {
         for r in self.lr_reservations.iter_mut() {
             if *r == Some(addr) { *r = None; }

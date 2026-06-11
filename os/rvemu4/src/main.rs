@@ -42,6 +42,7 @@ fn main() {
 
     let mut poll_count: u64 = 0;
     let mut step_count: u64 = 0;
+    let mut did_sched_trace = false;
     // eprintln!("Starting main loop, entry={:#x}, is_64={}, smp={}", entry, is_64, smp);
     loop {
         for h in harts.iter_mut() {
@@ -52,12 +53,24 @@ fn main() {
 
         poll_count += 1;
         if poll_count % 1000000 == 0 {
-            eprintln!("PROGRESS steps={}K pc={:#x}", step_count / 1000, harts[0].pc);
+            let pc = harts[0].pc;
+            if (pc >= 0x80001d16 && pc <= 0x80001dc6) && !did_sched_trace {
+                did_sched_trace = true;
+                let s1 = harts[0].x[9];
+                let proc0_state = 0x8000FDA0u64;
+                let state_val = bus.mmio_read(proc0_state, 4);
+                let state_val2 = bus.mmio_read(s1.wrapping_add(24), 4);
+                eprintln!("SCHED_TRACE: steps={}K pc={:#x} x1={:#x} x9={:#x} x10={:#x} x2(sp)={:#x} satp={:#x} priv={} mstatus={:#x} sstatus.SIE={}", step_count/1000, pc, harts[0].x[1], s1, harts[0].x[10], harts[0].x[2], harts[0].satp, harts[0].priv_level, harts[0].mstatus, (harts[0].mstatus>>1)&1);
+                eprintln!("SCHED_TRACE: proc[0].state at {:#x} = {} (RUNNABLE=3)", proc0_state, state_val);
+                eprintln!("SCHED_TRACE: p->state at s1+24 ({:#x}) = {} (RUNNABLE=3)", s1.wrapping_add(24), state_val2);
+            }
+            eprintln!("PROGRESS steps={}K pc={:#x}", step_count / 1000, pc);
         }
-        if poll_count % 256 == 0 {
+        if poll_count % 4096 == 0 {
             check_stdin(&mut bus);
-            if bus.uart_has_irq() {
+            if bus.uart_needs_pending() || (bus.uart_rx_ready() && (bus.uart_ier() & 1) != 0) {
                 bus.plic.set_pending(10);
+                bus.uart_clear_pending_tx_irq();
             }
         }
     }

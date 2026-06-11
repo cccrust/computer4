@@ -70,12 +70,18 @@ impl Uart {
 }
 
 pub struct Plic {
-    priority: [u32; 32], pending: u32,
+    priority: [u32; 32], pub pending: u32,
     senable: [u32; 8], spriority: [u32; 8],
 }
 impl Plic {
     pub fn new() -> Self { Self { priority: [0; 32], pending: 0, senable: [0; 8], spriority: [0; 8] } }
-    pub fn set_pending(&mut self, irq: u32) { self.pending |= 1 << irq; }
+    pub fn set_pending(&mut self, irq: u32) {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static PEND_N: AtomicU64 = AtomicU64::new(0);
+        let n = PEND_N.fetch_add(1, Ordering::Relaxed);
+        
+        self.pending |= 1 << irq;
+    }
     pub fn has_irq(&self, hart: usize) -> bool {
         let en = self.senable[hart];
         let pend = self.pending;
@@ -93,10 +99,11 @@ impl Plic {
             return self.senable[((off - 0x2080) / 0x100) as usize];
         }
         if off >= 0x201000 && off < 0x201000 + 8 * 0x2000 {
-            let hart = ((off - 0x201000) / 0x2000) as usize;
+            let context_off = off - 0x201000;
+            let hart = (context_off / 0x2000) as usize;
             if hart < 8 {
-                if (off as u32) % 0x2000 == 0 { return self.spriority[hart]; }
-                if (off as u32) % 0x2000 == 4 {
+                if context_off % 0x2000 == 0 { return self.spriority[hart]; }
+                if context_off % 0x2000 == 4 {
                     let mut best = 0u32;
                     let en = self.senable[hart];
                     for i in 1..32 {
@@ -104,7 +111,7 @@ impl Plic {
                             best = i as u32; break;
                         }
                     }
-                    if best != 0 { self.pending &= !(1 << best); }
+                     if best != 0 { self.pending &= !(1 << best); }
                     return best;
                 }
             }
@@ -117,9 +124,10 @@ impl Plic {
             self.senable[((off - 0x2080) / 0x100) as usize] = val; return;
         }
         if off >= 0x201000 && off < 0x201000 + 8 * 0x2000 {
-            let hart = ((off - 0x201000) / 0x2000) as usize;
+            let context_off = off - 0x201000;
+            let hart = (context_off / 0x2000) as usize;
             if hart < 8 {
-                if (off as u32) % 0x2000 == 0 { self.spriority[hart] = val; }
+                if context_off % 0x2000 == 0 { self.spriority[hart] = val; }
             }
         }
     }

@@ -142,6 +142,12 @@ impl Hart {
     }
 
     pub fn trap(&mut self, cause: u64, tval: u64) {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static TRAP_N: AtomicU64 = AtomicU64::new(0);
+        let tn = TRAP_N.fetch_add(1, Ordering::Relaxed);
+        if tn < 3 {
+            // eprintln!("TRAP_{}: cause={:#x}", tn, cause);
+        }
         let is_int = (cause >> 63) != 0; let code = cause & 0x7FFFFFFFFFFFFFFF;
         let deleg = self.priv_level <= PRV_S && (if is_int { (self.mideleg >> code) & 1 != 0 } else { (self.medeleg >> code) & 1 != 0 });
         if deleg {
@@ -165,14 +171,15 @@ impl Hart {
         let clint_mti = bus.clint_has_mti(self.mhartid as usize, t);
         if clint_mti { self.mip |= 1 << INT_MTI; } else { self.mip &= !(1 << INT_MTI); }
         let pend = self.mip & self.mie; if pend == 0 { return; }
-        let m_ie = (self.mstatus >> 3) & 1; let s_ie = (self.mstatus >> 1) & 1;
+        let s_ie = (self.mstatus >> 1) & 1;
+        let sp = pend & self.mideleg;
+        let m_ie = (self.mstatus >> 3) & 1;
         let mp = pend & !self.mideleg;
         if mp != 0 && (self.priv_level < PRV_M || (self.priv_level == PRV_M && m_ie != 0)) {
             for &p in &[INT_MEI, INT_MSI, INT_MTI, INT_SEI, INT_SSI, INT_STI] {
                 if mp & (1 << p) != 0 { self.trap((1 << 63) | p, 0); return; }
             }
         }
-        let sp = pend & self.mideleg;
         if sp != 0 && (self.priv_level < PRV_S || (self.priv_level == PRV_S && s_ie != 0)) {
             for &p in &[INT_SEI, INT_SSI, INT_STI] {
                 if sp & (1 << p) != 0 { self.trap((1 << 63) | p, 0); return; }
@@ -183,6 +190,7 @@ impl Hart {
     fn sext(v: u64, bits: u32) -> i64 { let m = 1u64 << (bits - 1); (v ^ m) as i64 - m as i64 }
 
     pub fn step(&mut self, bus: &mut Bus) -> bool {
+        self.check_interrupts(bus);
         use std::sync::atomic::{AtomicU64, Ordering};
         static INST_N: AtomicU64 = AtomicU64::new(0);
         let _n = INST_N.fetch_add(1, Ordering::Relaxed);
@@ -334,7 +342,7 @@ impl Hart {
                     let spp = ((self.mstatus >> 8) & 1) as u8;
                     self.mstatus = if self.mstatus & (1<<5) != 0 { self.mstatus | (1<<1) } else { self.mstatus & !(1<<1) };
                     self.mstatus |= 1<<5; self.mstatus &= !(1<<8); self.priv_level = if spp != 0 { PRV_S } else { PRV_U }; npc = self.sepc;
-                } else if inst_raw == 0x10500073 { npc = self.pc; }
+                } else if inst_raw == 0x10500073 { if self.mip == 0 { npc = self.pc; } }
                 else if inst_raw == 0x12000073 {}
                 else if f3 != 0 {
                     let csr_num = (inst_raw >> 20) & 0xFFF;
@@ -375,7 +383,7 @@ impl Hart {
             }
             _ => { self.trap(EXC_ILLEGAL_INST, inst_raw as u64); return true; }
         }
-        self.pc = npc; self.x[0] = 0; self.instret += 1; true
+        self.pc = npc; self.x[0] = 0; self.instret += 1; self.check_interrupts(bus); true
     }
 
     fn exec_rvc(&mut self, bus: &mut Bus, i: u16) -> bool {
@@ -569,11 +577,10 @@ impl Hart {
             },
             _ => { self.trap(EXC_ILLEGAL_INST, i as u64); return true; }
         }
-        self.pc = npc; self.x[0] = 0; self.instret += 1; true
+        self.pc = npc; self.x[0] = 0; self.instret += 1; self.check_interrupts(bus); true
     }
 }
 
-#[cfg(test)]
 mod tests {
     use super::*;
     use crate::memory::Bus;
@@ -620,6 +627,48 @@ mod tests {
         let mut b = bus();
         place_inst32(&mut b, pc, inst);
         let mut h = hart(regs, pc, is_64);
+        h.step(&mut b);
+        (h, b)
+    }
+
+    // ── instruction encoding helpers ──
+    fn r_type(f7: u8, rs2: u8, rs1: u8, f3: u8, rd: u8, opcode: u8) -> u32 {
+        ((f7 as u32) << 25) | ((rs2 as u32) << 20) | ((rs1 as u32) << 15) | ((f3 as u32) << 12) | ((rd as u32) << 7) | opcode as u32
+    }
+    fn i_type(imm: i16, rs1: u8, f3: u8, rd: u8, opcode: u8) -> u32 {
+        let imm = imm as u16;
+        ((imm as u32 & 0xFFF) << 20) | ((rs1 as u32) << 15) | ((f3 as u32) << 12) | ((rd as u32) << 7) | opcode as u32
+    }
+    fn s_type(imm: i16, rs2: u8, rs1: u8, f3: u8, opcode: u8) -> u32 {
+        let imm = imm as u16;
+        ((((imm as u32) >> 5) & 0x7F) << 25) | ((rs2 as u32) << 20) | ((rs1 as u32) << 15) | ((f3 as u32) << 12) | ((imm as u32 & 0x1F) << 7) | opcode as u32
+    }
+    fn b_type(imm: i16, rs2: u8, rs1: u8, f3: u8) -> u32 {
+        let imm = imm as u16;
+        let b31 = ((imm >> 12) & 1) as u32;
+        let b30_25 = ((imm >> 5) & 0x3F) as u32;
+        let b11_8 = ((imm >> 1) & 0xF) as u32;
+        let b7 = ((imm >> 11) & 1) as u32;
+        (b31 << 31) | (b30_25 << 25) | ((rs2 as u32) << 20) | ((rs1 as u32) << 15) | ((f3 as u32) << 12) | (b11_8 << 8) | (b7 << 7) | 0x63
+    }
+    fn u_type(imm: i32, rd: u8, opcode: u8) -> u32 {
+        ((imm as u32) & 0xFFFFF000) | ((rd as u32) << 7) | opcode as u32
+    }
+    fn j_type(imm: i32, rd: u8) -> u32 {
+        let imm = imm as u32;
+        let b31 = (imm >> 20) & 1;
+        let b30_21 = (imm >> 1) & 0x3FF;
+        let b20 = (imm >> 11) & 1;
+        let b19_12 = (imm >> 12) & 0xFF;
+        (b31 << 31) | (b30_21 << 21) | (b20 << 20) | (b19_12 << 12) | ((rd as u32) << 7) | 0x6F
+    }
+
+    fn exec_2(inst1: u32, inst2: u32, regs: &[u64; 32], is_64: bool) -> (Hart, Bus) {
+        let mut b = bus();
+        place_inst32(&mut b, TEST_PC, inst1);
+        place_inst32(&mut b, TEST_PC + 4, inst2);
+        let mut h = hart(regs, TEST_PC, is_64);
+        h.step(&mut b);
         h.step(&mut b);
         (h, b)
     }
@@ -1327,5 +1376,998 @@ mod tests {
         let regs = [42u64; 32];
         let (h, _) = exec_rvc(0x0800, &regs, TEST_PC, true);
         assert_eq!(h.x[0], 0, "x0 must always be 0 after RVC");
+    }
+
+    // ── LUI / AUIPC ──
+
+    #[test]
+    fn lui_positive() {
+        // LUI x1, 0x12345: rd=1, imm=0x12345000
+        let (h, _) = exec_rv64(u_type(0x12345000i32, 1, 0x37), &[0u64; 32], TEST_PC, true);
+        assert_eq!(h.x[1], 0x12345000, "LUI x1, 0x12345");
+    }
+
+    #[test]
+    fn lui_negative() {
+        // LUI x1, 0xFF800: imm is sign-extended to 64 bits
+        // 0xFF800 << 12 = 0xFF800000, sign-extended to 64 bits = 0xFFFFFFFF80000000
+        let (h, _) = exec_rv64(u_type(-0x800000i32, 1, 0x37), &[0u64; 32], TEST_PC, true);
+        assert_eq!(h.x[1], 0xFFFFFFFFFF800000u64, "LUI x1, negative imm");
+    }
+
+    #[test]
+    fn lui_x0() {
+        // LUI x0, 0x12345: should write nothing
+        let (h, _) = exec_rv64(u_type(0x12345000i32, 0, 0x37), &[0u64; 32], TEST_PC, true);
+        assert_eq!(h.x[0], 0, "LUI x0 should write nothing");
+    }
+
+    #[test]
+    fn auipc() {
+        // AUIPC x1, 0x12345: rd=1, result = pc + 0x12345000
+        let (h, _) = exec_rv64(u_type(0x12345000i32, 1, 0x17), &[0u64; 32], TEST_PC, true);
+        assert_eq!(h.x[1], TEST_PC + 0x12345000, "AUIPC x1, 0x12345");
+    }
+
+    // ── JAL (J-type offset tests) ──
+
+    #[test]
+    fn jal_forward() {
+        let (h, _) = exec_rv64(j_type(8, 1), &[0u64; 32], TEST_PC, true);
+        assert_eq!(h.x[1], TEST_PC + 4, "JAL ra=pc+4");
+        assert_eq!(h.pc, TEST_PC + 8, "JAL forward 8");
+    }
+
+    #[test]
+    fn jal_backward() {
+        let (h, _) = exec_rv64(j_type(-8, 1), &[0u64; 32], 0x80001000, true);
+        assert_eq!(h.x[1], 0x80001004, "JAL ra=pc+4");
+        assert_eq!(h.pc, 0x80001000 - 8, "JAL backward 8");
+    }
+
+    #[test]
+    fn jal_zero_rd() {
+        // JAL x0, +8: rd=0, no link
+        let (h, _) = exec_rv64(j_type(8, 0), &[0u64; 32], TEST_PC, true);
+        assert_eq!(h.x[0], 0, "JAL x0 no link");
+        assert_eq!(h.pc, TEST_PC + 8, "JAL x0 jump");
+    }
+
+    #[test]
+    fn jalr_with_offset() {
+        // JALR x1, x2(16): rd=1, rs1=2, imm=16
+        let mut regs = [0u64; 32];
+        regs[2] = 0x80001000;
+        let (h, _) = exec_rv64(i_type(16, 2, 0, 1, 0x67), &regs, TEST_PC, true);
+        assert_eq!(h.x[1], TEST_PC + 4, "JALR ra=pc+4");
+        assert_eq!(h.pc, (0x80001000 + 16) & !1, "JALR to x2+16");
+    }
+
+    // ── Branch (B-type) ──
+
+    #[test]
+    fn beq_not_taken() {
+        let mut regs = [0u64; 32];
+        regs[1] = 1; regs[2] = 2;
+        let (h, _) = exec_rv64(b_type(8, 2, 1, 0), &regs, TEST_PC, true);
+        assert_eq!(h.pc, TEST_PC + 4, "BEQ not taken");
+    }
+
+    #[test]
+    fn bne_taken() {
+        let mut regs = [0u64; 32];
+        regs[1] = 1; regs[2] = 2;
+        let (h, _) = exec_rv64(b_type(8, 2, 1, 1), &regs, TEST_PC, true);
+        assert_eq!(h.pc, TEST_PC + 8, "BNE taken");
+    }
+
+    #[test]
+    fn bne_not_taken() {
+        let mut regs = [0u64; 32];
+        regs[1] = 1; regs[2] = 1;
+        let (h, _) = exec_rv64(b_type(8, 2, 1, 1), &regs, TEST_PC, true);
+        assert_eq!(h.pc, TEST_PC + 4, "BNE not taken");
+    }
+
+    #[test]
+    fn blt_taken_signed() {
+        let mut regs = [0u64; 32];
+        regs[1] = -10i64 as u64; regs[2] = 5;
+        let (h, _) = exec_rv64(b_type(8, 2, 1, 4), &regs, TEST_PC, true);
+        assert_eq!(h.pc, TEST_PC + 8, "BLT taken (-10 < 5)");
+    }
+
+    #[test]
+    fn blt_not_taken_signed() {
+        let mut regs = [0u64; 32];
+        regs[1] = 10; regs[2] = 5;
+        let (h, _) = exec_rv64(b_type(8, 2, 1, 4), &regs, TEST_PC, true);
+        assert_eq!(h.pc, TEST_PC + 4, "BLT not taken (10 >= 5)");
+    }
+
+    #[test]
+    fn bge_taken_signed() {
+        let mut regs = [0u64; 32];
+        regs[1] = 10; regs[2] = 5;
+        let (h, _) = exec_rv64(b_type(8, 2, 1, 5), &regs, TEST_PC, true);
+        assert_eq!(h.pc, TEST_PC + 8, "BGE taken (10 >= 5)");
+    }
+
+    #[test]
+    fn bge_not_taken_signed() {
+        let mut regs = [0u64; 32];
+        regs[1] = -10i64 as u64; regs[2] = 5;
+        let (h, _) = exec_rv64(b_type(8, 2, 1, 5), &regs, TEST_PC, true);
+        assert_eq!(h.pc, TEST_PC + 4, "BGE not taken (-10 < 5)");
+    }
+
+    #[test]
+    fn bltu_taken() {
+        let mut regs = [0u64; 32];
+        regs[1] = 5; regs[2] = 10;
+        let (h, _) = exec_rv64(b_type(8, 2, 1, 6), &regs, TEST_PC, true);
+        assert_eq!(h.pc, TEST_PC + 8, "BLTU taken (5 < 10)");
+    }
+
+    #[test]
+    fn bgeu_taken() {
+        let mut regs = [0u64; 32];
+        regs[1] = 10; regs[2] = 5;
+        let (h, _) = exec_rv64(b_type(8, 2, 1, 7), &regs, TEST_PC, true);
+        assert_eq!(h.pc, TEST_PC + 8, "BGEU taken (10 >= 5)");
+    }
+
+    // ── Load (I-type load) ──
+
+    #[test]
+    fn lb_sign_extend() {
+        let mut h = hart(&[0u64; 32], TEST_PC, true);
+        h.x[2] = 0x80002000;
+        let mut b = bus();
+        b.ram[off(0x80002008)] = 0xFF;
+        place_inst32(&mut b, TEST_PC, i_type(8, 2, 0, 1, 0x03));
+        h.step(&mut b);
+        assert_eq!(h.x[1], -1i64 as u64, "LB sign-extend 0xFF");
+    }
+
+    #[test]
+    fn lh_sign_extend() {
+        let mut h = hart(&[0u64; 32], TEST_PC, true);
+        h.x[2] = 0x80002000;
+        let mut b = bus();
+        let addr = off(0x80002008);
+        b.ram[addr] = 0x00; b.ram[addr+1] = 0x80;
+        place_inst32(&mut b, TEST_PC, i_type(8, 2, 1, 1, 0x03));
+        h.step(&mut b);
+        assert_eq!(h.x[1], -32768i64 as u64, "LH sign-extend 0x8000");
+    }
+
+    #[test]
+    fn lbu_zero_extend() {
+        let mut h = hart(&[0u64; 32], TEST_PC, true);
+        h.x[2] = 0x80002000;
+        let mut b = bus();
+        b.ram[off(0x80002008)] = 0xFF;
+        place_inst32(&mut b, TEST_PC, i_type(8, 2, 4, 1, 0x03));
+        h.step(&mut b);
+        assert_eq!(h.x[1], 0xFF, "LBU zero-extend 0xFF");
+    }
+
+    #[test]
+    fn lhu_zero_extend() {
+        let mut h = hart(&[0u64; 32], TEST_PC, true);
+        h.x[2] = 0x80002000;
+        let mut b = bus();
+        let addr = off(0x80002008);
+        b.ram[addr] = 0xFF; b.ram[addr+1] = 0xFF;
+        place_inst32(&mut b, TEST_PC, i_type(8, 2, 5, 1, 0x03));
+        h.step(&mut b);
+        assert_eq!(h.x[1], 0xFFFF, "LHU zero-extend 0xFFFF");
+    }
+
+    #[test]
+    fn lwu_zero_extend() {
+        // LWU: f3=6, loads 32-bit, zero-extended
+        let mut h = hart(&[0u64; 32], TEST_PC, true);
+        h.x[2] = 0x80002000;
+        let mut b = bus();
+        let addr = off(0x80002008);
+        b.ram[addr] = 0x01; b.ram[addr+1] = 0x00;
+        b.ram[addr+2] = 0x00; b.ram[addr+3] = 0x80;
+        place_inst32(&mut b, TEST_PC, i_type(8, 2, 6, 1, 0x03));
+        h.step(&mut b);
+        assert_eq!(h.x[1], 0x80000001, "LWU zero-extend word");
+    }
+
+    // ── Store byte/halfword ──
+
+    #[test]
+    fn sb() {
+        let mut h = hart(&[0u64; 32], TEST_PC, true);
+        h.x[2] = 0x80002000;
+        h.x[3] = 0xDEADBEEF;
+        let mut b = bus();
+        place_inst32(&mut b, TEST_PC, s_type(8, 3, 2, 0, 0x23));
+        h.step(&mut b);
+        let addr = off(0x80002008);
+        assert_eq!(b.ram[addr], 0xEF, "SB stores lowest byte");
+    }
+
+    #[test]
+    fn sh() {
+        let mut h = hart(&[0u64; 32], TEST_PC, true);
+        h.x[2] = 0x80002000;
+        h.x[3] = 0xDEADBEEF;
+        let mut b = bus();
+        place_inst32(&mut b, TEST_PC, s_type(8, 3, 2, 1, 0x23));
+        h.step(&mut b);
+        let addr = off(0x80002008);
+        assert_eq!(b.ram[addr], 0xEF, "SH byte0");
+        assert_eq!(b.ram[addr+1], 0xBE, "SH byte1");
+    }
+
+    // ── ALU Immediate ──
+
+    #[test]
+    fn slti_positive() {
+        let mut regs = [0u64; 32];
+        regs[1] = 5;
+        let (h, _) = exec_rv64(i_type(10, 1, 2, 2, 0x13), &regs, TEST_PC, true);
+        assert_eq!(h.x[2], 1, "SLTI 5 < 10 = 1");
+    }
+
+    #[test]
+    fn slti_negative() {
+        let mut regs = [0u64; 32];
+        regs[1] = 5;
+        let (h, _) = exec_rv64(i_type(3, 1, 2, 2, 0x13), &regs, TEST_PC, true);
+        assert_eq!(h.x[2], 0, "SLTI 5 < 3 = 0");
+    }
+
+    #[test]
+    fn sltiu() {
+        let mut regs = [0u64; 32];
+        regs[1] = 5;
+        // imm=-1 (unsigned): 5 < UINT64_MAX = 1
+        let (h, _) = exec_rv64(i_type(-1i16, 1, 3, 2, 0x13), &regs, TEST_PC, true);
+        assert_eq!(h.x[2], 1, "SLTIU 5 < MAX = 1");
+    }
+
+    #[test]
+    fn xori() {
+        let mut regs = [0u64; 32];
+        regs[1] = 0xFF;
+        let (h, _) = exec_rv64(i_type(0xFF, 1, 4, 2, 0x13), &regs, TEST_PC, true);
+        assert_eq!(h.x[2], 0, "XORI 0xFF ^ 0xFF = 0");
+    }
+
+    #[test]
+    fn ori() {
+        let (h, _) = exec_rv64(i_type(0xF0, 0, 6, 1, 0x13), &[0u64; 32], TEST_PC, true);
+        assert_eq!(h.x[1], 0xF0, "ORI x0 | 0xF0 = 0xF0");
+    }
+
+    #[test]
+    fn andi() {
+        let mut regs = [0u64; 32];
+        regs[1] = 0xFF;
+        let (h, _) = exec_rv64(i_type(0x0F, 1, 7, 2, 0x13), &regs, TEST_PC, true);
+        assert_eq!(h.x[2], 0x0F, "ANDI 0xFF & 0x0F = 0x0F");
+    }
+
+    #[test]
+    fn slli() {
+        let mut regs = [0u64; 32];
+        regs[1] = 1;
+        // SLLI x2, x1, 3: imm={000000_000011}
+        let (h, _) = exec_rv64(i_type(3, 1, 1, 2, 0x13), &regs, TEST_PC, true);
+        assert_eq!(h.x[2], 8, "SLLI 1 << 3 = 8");
+    }
+
+    #[test]
+    fn srli() {
+        let mut regs = [0u64; 32];
+        regs[1] = 0x80;
+        let (h, _) = exec_rv64(i_type(3, 1, 5, 2, 0x13), &regs, TEST_PC, true);
+        assert_eq!(h.x[2], 0x10, "SRLI 0x80 >> 3 = 0x10");
+    }
+
+    #[test]
+    fn srai() {
+        let mut regs = [0u64; 32];
+        regs[1] = -8i64 as u64;
+        // SRAI x2, x1, 3: imm={010000_000011}
+        let (h, _) = exec_rv64(i_type(0x403i16, 1, 5, 2, 0x13), &regs, TEST_PC, true);
+        assert_eq!(h.x[2], -1i64 as u64, "SRAI -8 >> 3 = -1");
+    }
+
+    // ── ALU Register ──
+
+    #[test]
+    fn sll() {
+        let mut regs = [0u64; 32];
+        regs[1] = 1; regs[2] = 3;
+        let (h, _) = exec_rv64(r_type(0, 2, 1, 1, 3, 0x33), &regs, TEST_PC, true);
+        assert_eq!(h.x[3], 8, "SLL 1 << 3 = 8");
+    }
+
+    #[test]
+    fn slt() {
+        let mut regs = [0u64; 32];
+        regs[1] = -5i64 as u64; regs[2] = 10;
+        let (h, _) = exec_rv64(r_type(0, 2, 1, 2, 3, 0x33), &regs, TEST_PC, true);
+        assert_eq!(h.x[3], 1, "SLT -5 < 10 = 1");
+    }
+
+    #[test]
+    fn sltu() {
+        let mut regs = [0u64; 32];
+        regs[1] = 5; regs[2] = 10;
+        let (h, _) = exec_rv64(r_type(0, 2, 1, 3, 3, 0x33), &regs, TEST_PC, true);
+        assert_eq!(h.x[3], 1, "SLTU 5 < 10 = 1");
+    }
+
+    #[test]
+    fn xor() {
+        let mut regs = [0u64; 32];
+        regs[1] = 0xFF; regs[2] = 0x0F;
+        let (h, _) = exec_rv64(r_type(0, 2, 1, 4, 3, 0x33), &regs, TEST_PC, true);
+        assert_eq!(h.x[3], 0xF0, "XOR 0xFF ^ 0x0F = 0xF0");
+    }
+
+    #[test]
+    fn srl() {
+        let mut regs = [0u64; 32];
+        regs[1] = 0x80; regs[2] = 3;
+        let (h, _) = exec_rv64(r_type(0, 2, 1, 5, 3, 0x33), &regs, TEST_PC, true);
+        assert_eq!(h.x[3], 0x10, "SRL 0x80 >> 3 = 0x10");
+    }
+
+    #[test]
+    fn sra() {
+        let mut regs = [0u64; 32];
+        regs[1] = -8i64 as u64; regs[2] = 3;
+        let (h, _) = exec_rv64(r_type(0x20, 2, 1, 5, 3, 0x33), &regs, TEST_PC, true);
+        assert_eq!(h.x[3], -1i64 as u64, "SRA -8 >> 3 = -1");
+    }
+
+    #[test]
+    fn or() {
+        let mut regs = [0u64; 32];
+        regs[1] = 0xF0; regs[2] = 0x0F;
+        let (h, _) = exec_rv64(r_type(0, 2, 1, 6, 3, 0x33), &regs, TEST_PC, true);
+        assert_eq!(h.x[3], 0xFF, "OR 0xF0 | 0x0F = 0xFF");
+    }
+
+    #[test]
+    fn and() {
+        let mut regs = [0u64; 32];
+        regs[1] = 0xFF; regs[2] = 0x0F;
+        let (h, _) = exec_rv64(r_type(0, 2, 1, 7, 3, 0x33), &regs, TEST_PC, true);
+        assert_eq!(h.x[3], 0x0F, "AND 0xFF & 0x0F = 0x0F");
+    }
+
+    // ── NOP ──
+
+    #[test]
+    fn nop() {
+        let regs = [42u64; 32];
+        let (h, _) = exec_rv64(i_type(0, 0, 0, 0, 0x13), &regs, TEST_PC, true);
+        assert_eq!(h.pc, TEST_PC + 4, "NOP advances PC");
+        assert_eq!(h.x[0], 0, "x0 still 0 after NOP");
+    }
+
+    // ── 32-bit (RV64I word instructions) ──
+
+    #[test]
+    fn addiw() {
+        let mut regs = [0u64; 32];
+        regs[1] = 0xFFFFFFFFu64; // -1 in 32-bit
+        // ADDIW x2, x1, 1: result = (-1 + 1) sign-extended = 0
+        let (h, _) = exec_rv64(i_type(1, 1, 0, 2, 0x1B), &regs, TEST_PC, true);
+        assert_eq!(h.x[2], 0, "ADDIW sign-extends 32-bit result");
+    }
+
+    #[test]
+    fn addiw_positive() {
+        let mut regs = [0u64; 32];
+        regs[1] = 0x7FFFFFFFu64;
+        let (h, _) = exec_rv64(i_type(1, 1, 0, 2, 0x1B), &regs, TEST_PC, true);
+        assert_eq!(h.x[2], 0xFFFFFFFF80000000u64, "ADDIW wraps and sign-extends");
+    }
+
+    #[test]
+    fn slliw() {
+        let mut regs = [0u64; 32];
+        regs[1] = 1;
+        let (h, _) = exec_rv64(i_type(3, 1, 1, 2, 0x1B), &regs, TEST_PC, true);
+        assert_eq!(h.x[2], 8, "SLLIW 1 << 3 = 8");
+    }
+
+    #[test]
+    fn srliw() {
+        let mut regs = [0u64; 32];
+        regs[1] = 0x80;
+        let (h, _) = exec_rv64(i_type(3, 1, 5, 2, 0x1B), &regs, TEST_PC, true);
+        assert_eq!(h.x[2], 0x10, "SRLIW 0x80 >> 3 = 0x10, zero-extended");
+    }
+
+    #[test]
+    fn sraiw() {
+        let mut regs = [0u64; 32];
+        regs[1] = 0x80000000u64;
+        // SRAIW: imm = {010000_000011} for shamt=3
+        let (h, _) = exec_rv64(i_type(0x403i16, 1, 5, 2, 0x1B), &regs, TEST_PC, true);
+        assert_eq!(h.x[2], 0xFFFFFFFFF0000000u64, "SRAIW arithmetic shift of 32-bit signed");
+    }
+
+    #[test]
+    fn addw() {
+        let mut regs = [0u64; 32];
+        regs[1] = 0x7FFFFFFFu64; regs[2] = 1;
+        // ADDW: 0x7FFFFFFF + 1 = 0x80000000 (wraps), sign-extended = -2147483648
+        let (h, _) = exec_rv64(r_type(0, 2, 1, 0, 3, 0x3B), &regs, TEST_PC, true);
+        assert_eq!(h.x[3], 0xFFFFFFFF80000000u64, "ADDW wraps and sign-extends");
+    }
+
+    #[test]
+    fn subw() {
+        let mut regs = [0u64; 32];
+        regs[1] = 1; regs[2] = 2;
+        let (h, _) = exec_rv64(r_type(0x20, 2, 1, 0, 3, 0x3B), &regs, TEST_PC, true);
+        assert_eq!(h.x[3], -1i64 as u64, "SUBW 1-2 = -1 sign-extended");
+    }
+
+    #[test]
+    fn sllw() {
+        let mut regs = [0u64; 32];
+        regs[1] = 1; regs[2] = 3;
+        let (h, _) = exec_rv64(r_type(0, 2, 1, 1, 3, 0x3B), &regs, TEST_PC, true);
+        assert_eq!(h.x[3], 8, "SLLW 1 << 3 = 8");
+    }
+
+    #[test]
+    fn srlw() {
+        let mut regs = [0u64; 32];
+        regs[1] = 0x100; regs[2] = 4;
+        let (h, _) = exec_rv64(r_type(0, 2, 1, 5, 3, 0x3B), &regs, TEST_PC, true);
+        assert_eq!(h.x[3], 0x10, "SRLW 0x100 >> 4 = 0x10");
+    }
+
+    #[test]
+    fn sraw() {
+        let mut regs = [0u64; 32];
+        regs[1] = 0x80000000u64; regs[2] = 4;
+        let (h, _) = exec_rv64(r_type(0x20, 2, 1, 5, 3, 0x3B), &regs, TEST_PC, true);
+        assert_eq!(h.x[3], 0xFFFFFFFFF8000000u64, "SRAW arithmetic shift of 32-bit");
+    }
+
+    // ── RV64M Multiply/Divide ──
+
+    #[test]
+    fn mul() {
+        let mut regs = [0u64; 32];
+        regs[1] = 1000; regs[2] = 2000;
+        let (h, _) = exec_rv64(r_type(1, 2, 1, 0, 3, 0x33), &regs, TEST_PC, true);
+        assert_eq!(h.x[3], 2000000u64, "MUL 1000*2000 = 2000000");
+    }
+
+    #[test]
+    fn mulh() {
+        let mut regs = [0u64; 32];
+        regs[1] = 0x7FFFFFFF_FFFFFFFFu64; regs[2] = 0x7FFFFFFF_FFFFFFFFu64;
+        // mulh of two large positive numbers
+        let (h, _) = exec_rv64(r_type(1, 2, 1, 1, 3, 0x33), &regs, TEST_PC, true);
+        assert_eq!(h.x[3], 0x3FFFFFFF_FFFFFFFFu64, "MULH high half");
+    }
+
+    #[test]
+    fn mulhsu() {
+        // MULHSU: signed * unsigned
+        let mut regs = [0u64; 32];
+        regs[1] = -1i64 as u64; regs[2] = 1;
+        let (h, _) = exec_rv64(r_type(1, 2, 1, 2, 3, 0x33), &regs, TEST_PC, true);
+        assert_eq!(h.x[3], 0xFFFFFFFFFFFFFFFFu64, "MULHSU (-1)*1 upper 64 bits = 0xFFFF_FFFF_FFFF_FFFF");
+    }
+
+    #[test]
+    fn mulhu() {
+        let mut regs = [0u64; 32];
+        regs[1] = 0xFFFFFFFF_FFFFFFFFu64; regs[2] = 0xFFFFFFFF_FFFFFFFFu64;
+        let (h, _) = exec_rv64(r_type(1, 2, 1, 3, 3, 0x33), &regs, TEST_PC, true);
+        assert_eq!(h.x[3], 0xFFFFFFFF_FFFFFFFEu64, "MULHU high half of MAX^2");
+    }
+
+    #[test]
+    fn div() {
+        let mut regs = [0u64; 32];
+        regs[1] = 100; regs[2] = 7;
+        let (h, _) = exec_rv64(r_type(1, 2, 1, 4, 3, 0x33), &regs, TEST_PC, true);
+        assert_eq!(h.x[3], 14, "DIV 100/7 = 14");
+    }
+
+    #[test]
+    fn div_negative() {
+        let mut regs = [0u64; 32];
+        regs[1] = -100i64 as u64; regs[2] = 7;
+        let (h, _) = exec_rv64(r_type(1, 2, 1, 4, 3, 0x33), &regs, TEST_PC, true);
+        assert_eq!(h.x[3] as i64, -14, "DIV -100/7 = -14");
+    }
+
+    #[test]
+    fn div_by_zero() {
+        let mut regs = [0u64; 32];
+        regs[1] = 100; regs[2] = 0;
+        let (h, _) = exec_rv64(r_type(1, 2, 1, 4, 3, 0x33), &regs, TEST_PC, true);
+        assert_eq!(h.x[3], u64::MAX, "DIV by zero returns -1");
+    }
+
+    #[test]
+    fn divu() {
+        let mut regs = [0u64; 32];
+        regs[1] = 100; regs[2] = 7;
+        let (h, _) = exec_rv64(r_type(1, 2, 1, 5, 3, 0x33), &regs, TEST_PC, true);
+        assert_eq!(h.x[3], 14, "DIVU 100/7 = 14");
+    }
+
+    #[test]
+    fn divu_by_zero() {
+        let mut regs = [0u64; 32];
+        regs[1] = 100; regs[2] = 0;
+        let (h, _) = exec_rv64(r_type(1, 2, 1, 5, 3, 0x33), &regs, TEST_PC, true);
+        assert_eq!(h.x[3], u64::MAX, "DIVU by zero returns MAX");
+    }
+
+    #[test]
+    fn rem() {
+        let mut regs = [0u64; 32];
+        regs[1] = 100; regs[2] = 7;
+        let (h, _) = exec_rv64(r_type(1, 2, 1, 6, 3, 0x33), &regs, TEST_PC, true);
+        assert_eq!(h.x[3], 2, "REM 100%7 = 2");
+    }
+
+    #[test]
+    fn rem_by_zero() {
+        let mut regs = [0u64; 32];
+        regs[1] = 100; regs[2] = 0;
+        let (h, _) = exec_rv64(r_type(1, 2, 1, 6, 3, 0x33), &regs, TEST_PC, true);
+        assert_eq!(h.x[3], 100, "REM by zero returns dividend");
+    }
+
+    #[test]
+    fn remu() {
+        let mut regs = [0u64; 32];
+        regs[1] = 100; regs[2] = 7;
+        let (h, _) = exec_rv64(r_type(1, 2, 1, 7, 3, 0x33), &regs, TEST_PC, true);
+        assert_eq!(h.x[3], 2, "REMU 100%7 = 2");
+    }
+
+    #[test]
+    fn remu_by_zero() {
+        let mut regs = [0u64; 32];
+        regs[1] = 100; regs[2] = 0;
+        let (h, _) = exec_rv64(r_type(1, 2, 1, 7, 3, 0x33), &regs, TEST_PC, true);
+        assert_eq!(h.x[3], 100, "REMU by zero returns dividend");
+    }
+
+    #[test]
+    fn mulw() {
+        let mut regs = [0u64; 32];
+        regs[1] = 100000; regs[2] = 200000;
+        let (h, _) = exec_rv64(r_type(1, 2, 1, 0, 3, 0x3B), &regs, TEST_PC, true);
+        assert_eq!(h.x[3], 20000000000u64 as i32 as i64 as u64, "MULW sign-extended");
+    }
+
+    #[test]
+    fn divw() {
+        let mut regs = [0u64; 32];
+        regs[1] = 100; regs[2] = 7;
+        let (h, _) = exec_rv64(r_type(1, 2, 1, 4, 3, 0x3B), &regs, TEST_PC, true);
+        assert_eq!(h.x[3], 14, "DIVW 100/7 = 14");
+    }
+
+    #[test]
+    fn divuw() {
+        let mut regs = [0u64; 32];
+        regs[1] = 100; regs[2] = 7;
+        let (h, _) = exec_rv64(r_type(1, 2, 1, 5, 3, 0x3B), &regs, TEST_PC, true);
+        assert_eq!(h.x[3], 14, "DIVUW 100/7 = 14");
+    }
+
+    #[test]
+    fn remw() {
+        let mut regs = [0u64; 32];
+        regs[1] = 100; regs[2] = 7;
+        let (h, _) = exec_rv64(r_type(1, 2, 1, 6, 3, 0x3B), &regs, TEST_PC, true);
+        assert_eq!(h.x[3], 2, "REMW 100%7 = 2");
+    }
+
+    #[test]
+    fn remuw() {
+        let mut regs = [0u64; 32];
+        regs[1] = 100; regs[2] = 7;
+        let (h, _) = exec_rv64(r_type(1, 2, 1, 7, 3, 0x3B), &regs, TEST_PC, true);
+        assert_eq!(h.x[3], 2, "REMUW 100%7 = 2");
+    }
+
+    // ── RV64A Atomic (LR/SC, AMO) ──
+
+    #[test]
+    fn lr_d() {
+        // LR.D x1, (x2): atomically load from address in x2
+        // LR.D: f7>>2==2, f3=3 (D), rs1=x2, rd=x1
+        let mut h = hart(&[0u64; 32], TEST_PC, true);
+        h.x[2] = 0x80002000;
+        let mut b = bus();
+        let addr = off(0x80002000);
+        let val: u64 = 0xDEADBEEF_CAFEBABE;
+        b.ram[addr..addr+8].copy_from_slice(&val.to_le_bytes());
+        place_inst32(&mut b, TEST_PC, r_type(0x08, 0, 2, 3, 1, 0x2F));
+        h.step(&mut b);
+        assert_eq!(h.x[1], val, "LR.D loads reservation");
+        assert_eq!(b.lr_reservations[0], Some(0x80002000), "LR.D sets reservation");
+    }
+
+    #[test]
+    fn sc_d_success() {
+        // LR.D x1, (x2); SC.D x3, x4, (x2) - same address
+        let mut regs = [0u64; 32];
+        regs[2] = 0x80002000;
+        regs[4] = 0xAABBCCDD_EEFF1122;
+        let (h, b) = exec_2(
+            r_type(0x08, 0, 2, 3, 1, 0x2F), // LR.D x1, (x2)
+            r_type(0x0C, 4, 2, 3, 3, 0x2F), // SC.D x3, x4, (x2)
+            &regs, true,
+        );
+        assert_eq!(h.x[3], 0, "SC.D succeeds, returns 0");
+        let stored = u64::from_le_bytes(b.ram[off(0x80002000)..off(0x80002000)+8].try_into().unwrap());
+        assert_eq!(stored, 0xAABBCCDD_EEFF1122);
+    }
+
+    #[test]
+    fn sc_d_fail() {
+        // SC.D to different address than LR.D should fail
+        let mut regs = [0u64; 32];
+        regs[2] = 0x80002000;
+        regs[3] = 0x80003000; // different address
+        regs[4] = 0xDEAD;
+        let (h, _b) = exec_2(
+            r_type(0x08, 0, 2, 3, 1, 0x2F), // LR.D x1, (x2) at 0x80002000
+            r_type(0x0C, 4, 3, 3, 5, 0x2F), // SC.D x5, x4, (x3) at 0x80003000 - different!
+            &regs, true,
+        );
+        assert_eq!(h.x[5], 1, "SC.D fails, returns 1");
+    }
+
+    #[test]
+    fn amoswap_d() {
+        // AMOSWAP.D x1, x3, (x2): swap memory[x2] with x3, old value to x1
+        // f3=3 (D), f7=0x04 (f7>>2==1)
+        let mut h = hart(&[0u64; 32], TEST_PC, true);
+        h.x[2] = 0x80002000;
+        h.x[3] = 0xBBBB;
+        let mut b = bus();
+        let addr = off(0x80002000);
+        b.ram[addr..addr+8].copy_from_slice(&0xAAAAu64.to_le_bytes());
+        place_inst32(&mut b, TEST_PC, r_type(0x04, 3, 2, 3, 1, 0x2F));
+        h.step(&mut b);
+        assert_eq!(h.x[1], 0xAAAA, "AMOSWAP.D returns old value");
+        let stored = u64::from_le_bytes(b.ram[addr..addr+8].try_into().unwrap());
+        assert_eq!(stored, 0xBBBB, "AMOSWAP.D swaps new value");
+    }
+
+    #[test]
+    fn amoadd_d() {
+        // AMOADD.D x1, x3, (x2): add x3 to memory[x2], old value to x1
+        // f3=3, f7=0x00 (f7>>2==0 for ADD)
+        let mut h = hart(&[0u64; 32], TEST_PC, true);
+        h.x[2] = 0x80002000;
+        h.x[3] = 10;
+        let mut b = bus();
+        let addr = off(0x80002000);
+        b.ram[addr..addr+8].copy_from_slice(&7u64.to_le_bytes());
+        place_inst32(&mut b, TEST_PC, r_type(0x00, 3, 2, 3, 1, 0x2F));
+        h.step(&mut b);
+        assert_eq!(h.x[1], 7, "AMOADD.D returns old value");
+        let stored = u64::from_le_bytes(b.ram[addr..addr+8].try_into().unwrap());
+        assert_eq!(stored, 17, "AMOADD.D 7+10 = 17");
+    }
+
+    #[test]
+    fn amoand_d() {
+        // AMOAND.D: f7>>2==12, f7=0x30
+        let mut h = hart(&[0u64; 32], TEST_PC, true);
+        h.x[2] = 0x80002000;
+        h.x[3] = 0xFF0F;
+        let mut b = bus();
+        let addr = off(0x80002000);
+        b.ram[addr..addr+8].copy_from_slice(&0xFFFFu64.to_le_bytes());
+        place_inst32(&mut b, TEST_PC, r_type(0x30, 3, 2, 3, 1, 0x2F));
+        h.step(&mut b);
+        let stored = u64::from_le_bytes(b.ram[addr..addr+8].try_into().unwrap());
+        assert_eq!(stored, 0xFF0F, "AMOAND.D 0xFFFF & 0xFF0F = 0xFF0F");
+    }
+
+    #[test]
+    fn amoor_d() {
+        // AMOOR.D: f7>>2==8, f7=0x20
+        let mut h = hart(&[0u64; 32], TEST_PC, true);
+        h.x[2] = 0x80002000;
+        h.x[3] = 0x0F00;
+        let mut b = bus();
+        let addr = off(0x80002000);
+        b.ram[addr..addr+8].copy_from_slice(&0x00FFu64.to_le_bytes());
+        place_inst32(&mut b, TEST_PC, r_type(0x20, 3, 2, 3, 1, 0x2F));
+        h.step(&mut b);
+        let stored = u64::from_le_bytes(b.ram[addr..addr+8].try_into().unwrap());
+        assert_eq!(stored, 0x0FFF, "AMOOR.D 0x00FF | 0x0F00 = 0x0FFF");
+    }
+
+    #[test]
+    fn amoxor_d() {
+        // AMOXOR.D: f7>>2==4, f7=0x10
+        let mut h = hart(&[0u64; 32], TEST_PC, true);
+        h.x[2] = 0x80002000;
+        h.x[3] = 0xFF00;
+        let mut b = bus();
+        let addr = off(0x80002000);
+        b.ram[addr..addr+8].copy_from_slice(&0x0FF0u64.to_le_bytes());
+        place_inst32(&mut b, TEST_PC, r_type(0x10, 3, 2, 3, 1, 0x2F));
+        h.step(&mut b);
+        let stored = u64::from_le_bytes(b.ram[addr..addr+8].try_into().unwrap());
+        assert_eq!(stored, 0xF0F0, "AMOXOR.D 0x0FF0 ^ 0xFF00 = 0xF0F0");
+    }
+
+    #[test]
+    fn amomin_d() {
+        // AMOMIN.D (signed min): f7>>2==16, f7=0x40
+        let mut h = hart(&[0u64; 32], TEST_PC, true);
+        h.x[2] = 0x80002000;
+        h.x[3] = -10i64 as u64;
+        let mut b = bus();
+        let addr = off(0x80002000);
+        b.ram[addr..addr+8].copy_from_slice(&5u64.to_le_bytes());
+        place_inst32(&mut b, TEST_PC, r_type(0x40, 3, 2, 3, 1, 0x2F));
+        h.step(&mut b);
+        let stored = u64::from_le_bytes(b.ram[addr..addr+8].try_into().unwrap());
+        assert_eq!(stored as i64, -10, "AMOMIN.D min(5, -10) = -10");
+        assert_eq!(h.x[1], 5, "AMOMIN.D returns old value 5");
+    }
+
+    #[test]
+    fn amomax_d() {
+        // AMOMAX.D (signed max): f7>>2==20, f7=0x50
+        let mut h = hart(&[0u64; 32], TEST_PC, true);
+        h.x[2] = 0x80002000;
+        h.x[3] = -10i64 as u64;
+        let mut b = bus();
+        let addr = off(0x80002000);
+        b.ram[addr..addr+8].copy_from_slice(&5u64.to_le_bytes());
+        place_inst32(&mut b, TEST_PC, r_type(0x50, 3, 2, 3, 1, 0x2F));
+        h.step(&mut b);
+        let stored = u64::from_le_bytes(b.ram[addr..addr+8].try_into().unwrap());
+        assert_eq!(stored, 5, "AMOMAX.D max(5, -10) = 5");
+    }
+
+    #[test]
+    fn amominu_d() {
+        // AMOMINU.D (unsigned min): f7>>2==24, f7=0x60
+        let mut h = hart(&[0u64; 32], TEST_PC, true);
+        h.x[2] = 0x80002000;
+        h.x[3] = 3;
+        let mut b = bus();
+        let addr = off(0x80002000);
+        b.ram[addr..addr+8].copy_from_slice(&10u64.to_le_bytes());
+        place_inst32(&mut b, TEST_PC, r_type(0x60, 3, 2, 3, 1, 0x2F));
+        h.step(&mut b);
+        let stored = u64::from_le_bytes(b.ram[addr..addr+8].try_into().unwrap());
+        assert_eq!(stored, 3, "AMOMINU.D min(10, 3) = 3");
+    }
+
+    #[test]
+    fn amomaxu_d() {
+        // AMOMAXU.D (unsigned max): f7>>2==28, f7=0x70
+        let mut h = hart(&[0u64; 32], TEST_PC, true);
+        h.x[2] = 0x80002000;
+        h.x[3] = 10;
+        let mut b = bus();
+        let addr = off(0x80002000);
+        b.ram[addr..addr+8].copy_from_slice(&3u64.to_le_bytes());
+        place_inst32(&mut b, TEST_PC, r_type(0x70, 3, 2, 3, 1, 0x2F));
+        h.step(&mut b);
+        let stored = u64::from_le_bytes(b.ram[addr..addr+8].try_into().unwrap());
+        assert_eq!(stored, 10, "AMOMAXU.D max(3, 10) = 10");
+    }
+
+    // ── CSR instructions ──
+
+    #[test]
+    fn csrrs() {
+        // CSRRS x1, mstatus, x2: read mstatus, OR with x2, write back
+        let mut regs = [0u64; 32];
+        regs[2] = 0x8; // set bit 3 (MIE)
+        let (h, _) = exec_rv64(i_type(0x300, 2, 2, 1, 0x73), &regs, TEST_PC, true); // CSRRS x1, mstatus, x2
+        assert_eq!(h.x[1], 0, "CSRRS returns old mstatus");
+        // mstatus should now have MIE=1
+        assert_eq!(h.mstatus & 0x8, 0x8, "CSRRS set MIE bit");
+    }
+
+    #[test]
+    fn csrrc() {
+        // CSRRC x1, mstatus, x2: read mstatus, clear bits from x2, write back
+        let mut regs = [0u64; 32];
+        regs[2] = 0x8; // bit 3 (MIE)
+        let mut h = Hart::new(0);
+        h.pc = TEST_PC; h.priv_level = PRV_M;
+        h.x = regs;
+        h.mstatus = 0x8; // start with MIE=1
+        let mut b = bus();
+        place_inst32(&mut b, TEST_PC, i_type(0x300, 2, 3, 1, 0x73));
+        h.step(&mut b);
+        assert_eq!(h.x[1], 0x8, "CSRRC returns old mstatus with MIE=1");
+        assert_eq!(h.mstatus & 0x8, 0, "CSRRC cleared MIE bit");
+    }
+
+    #[test]
+    fn csrrw_zero_rs1() {
+        // CSRRW with rs1=x0 should not write CSR (by spec, reads are fine)
+        // inst = CSRRW x1, mstatus, x0: rs1=0 means no write
+        // 0x300020F3 = csr=0x300, rs1=00000, f3=001, rd=00001, op=1110011
+        let (h, _) = exec_rv64(0x300020F3, &[0u64; 32], TEST_PC, true);
+        assert_eq!(h.x[1], 0, "CSRRW x0 reads mstatus=0");
+    }
+
+    // ── ECALL / EBREAK ──
+
+    #[test]
+    fn ecall_triggers_trap() {
+        let (h, _) = exec_rv64(0x00000073, &[0u64; 32], TEST_PC, true);
+        // ECALL in M-mode: cause = 11
+        assert_eq!(h.mcause, 11, "ECALL cause should be 11 (M-mode)");
+        assert_ne!(h.pc, TEST_PC + 4, "ECALL should trap, not continue");
+    }
+
+    #[test]
+    fn ebreak_triggers_trap() {
+        let (h, _) = exec_rv64(0x00100073, &[0u64; 32], TEST_PC, true);
+        assert_eq!(h.mcause, 3, "EBREAK cause should be 3 (breakpoint)");
+        assert_ne!(h.pc, TEST_PC + 4, "EBREAK should trap");
+    }
+
+    // ── MRET / SRET ──
+
+    #[test]
+    fn mret_returns_to_mepc() {
+        let mut h = Hart::new(0);
+        h.pc = 0x80001000;
+        h.priv_level = PRV_M;
+        h.mstatus = 0x1888; // MIE=0, MPP=3 (M-mode before trap)
+        h.mepc = 0x80002000;
+        let mut b = bus();
+        place_inst32(&mut b, 0x80001000, 0x30200073); // MRET
+        h.step(&mut b);
+        assert_eq!(h.pc, 0x80002000, "MRET goes to mepc");
+        assert_eq!(h.priv_level, PRV_M, "MRET returns to M-mode");
+        assert_eq!(h.mstatus & 0x8, 0x8, "MRET restores MIE");
+    }
+
+    #[test]
+    fn mret_returns_s_mode() {
+        // MRET with MPP=1 (S-mode before trap)
+        let mut h = Hart::new(0);
+        h.pc = 0x80001000;
+        h.priv_level = PRV_M;
+        h.mstatus = (PRV_S as u64) << 11; // MPP=S-mode
+        h.mepc = 0x80002000;
+        let mut b = bus();
+        place_inst32(&mut b, 0x80001000, 0x30200073); // MRET
+        h.step(&mut b);
+        assert_eq!(h.priv_level, PRV_S, "MRET returns to S-mode");
+    }
+
+    #[test]
+    fn sret_returns_to_sepc() {
+        let mut h = Hart::new(0);
+        h.pc = 0x80001000;
+        h.priv_level = PRV_S;
+        h.mstatus = 0x100; // SIE=0, SPP=1 (S-mode before trap) — SPP is bit 8
+        h.sepc = 0x80003000;
+        let mut b = bus();
+        place_inst32(&mut b, 0x80001000, 0x10200073); // SRET
+        h.step(&mut b);
+        assert_eq!(h.pc, 0x80003000, "SRET goes to sepc");
+        assert_eq!(h.priv_level, PRV_S, "SRET returns to S-mode");
+        assert_eq!(h.mstatus & 0x100, 0, "SRET clears SPP");
+        assert_eq!(h.mstatus & 0x20, 0x20, "SRET sets SPIE=1");
+    }
+
+    // ── WFI (Wait For Interrupt) ──
+
+    #[test]
+    fn wfi_loops_when_mip_nonzero() {
+        // WFI with pending interrupts should NOT loop (spec says WFI is hint)
+        // Our implementation: wfi = 0x10500073 sets npc = self.pc when mip == 0
+        // So with mip != 0, it should advance normally
+        let mut h = Hart::new(0);
+        h.pc = TEST_PC;
+        h.priv_level = PRV_M;
+        h.mip = 0x100; // some pending interrupt
+        let mut b = bus();
+        b.clint.mtimecmp[0] = u64::MAX; // prevent check_interrupts from setting MTI
+        place_inst32(&mut b, TEST_PC, 0x10500073); // WFI
+        h.step(&mut b);
+        assert_eq!(h.pc, TEST_PC + 4, "WFI with mip != 0 advances PC");
+    }
+
+    #[test]
+    fn wfi_loops_when_mip_zero() {
+        // WFI with mip == 0: npc = self.pc, so we loop
+        let mut h = Hart::new(0);
+        h.pc = TEST_PC;
+        h.priv_level = PRV_M;
+        h.mip = 0;
+        let mut b = bus();
+        b.clint.mtimecmp[0] = u64::MAX; // prevent check_interrupts from setting MTI
+        place_inst32(&mut b, TEST_PC, 0x10500073); // WFI
+        h.step(&mut b);
+        assert_eq!(h.pc, TEST_PC, "WFI with mip=0 loops at same PC");
+    }
+
+    // ── FENCE (treated as NOP) ──
+
+    #[test]
+    fn fence_is_nop() {
+        // FENCE: opcode=0x0F, imm=0, rd=0, rs1=0, f3=000
+        // inst = 0x0000000F
+        let regs = [42u64; 32];
+        let (h, _) = exec_rv64(0x0000000F, &regs, TEST_PC, true);
+        assert_eq!(h.pc, TEST_PC + 4, "FENCE advances PC like NOP");
+        assert_eq!(h.x[0], 0, "x0 still 0 after FENCE");
+    }
+
+    // ── SFENCE.VMA (treated as NOP) ──
+
+    #[test]
+    fn sfence_vma_is_nop() {
+        // SFENCE.VMA: 0x12000073
+        let regs = [42u64; 32];
+        let (h, _) = exec_rv64(0x12000073, &regs, TEST_PC, true);
+        assert_eq!(h.pc, TEST_PC + 4, "SFENCE.VMA advances PC");
+    }
+
+    // ── Edge: ADDI with negative immediate ──
+
+    #[test]
+    fn addi_neg_imm() {
+        let mut regs = [0u64; 32];
+        regs[1] = 10;
+        let (h, _) = exec_rv64(i_type(-5i16, 1, 0, 2, 0x13), &regs, TEST_PC, true);
+        assert_eq!(h.x[2], 5, "ADDI 10 + (-5) = 5");
+    }
+
+    // ── Edge: 32-bit wrapping in MUL/DIV ──
+
+    #[test]
+    fn mulw_overflow() {
+        let mut regs = [0u64; 32];
+        regs[1] = 0x80000000u64; regs[2] = 2;
+        // 0x80000000 * 2 = 0x100000000, truncated to 32-bit = 0, sign-extended = 0
+        let (h, _) = exec_rv64(r_type(1, 2, 1, 0, 3, 0x3B), &regs, TEST_PC, true);
+        assert_eq!(h.x[3], 0, "MULW overflow wraps to 0");
+    }
+
+    // ── Edge: LR/SC store clears reservations for all harts ──
+
+    #[test]
+    fn sc_d_clears_reservation() {
+        let mut h = hart(&[0u64; 32], TEST_PC, true);
+        h.x[2] = 0x80002000;
+        h.x[4] = 0x42;
+        let mut b = bus();
+        b.lr_reservations[0] = Some(0x80002000);
+        place_inst32(&mut b, TEST_PC, r_type(0x0C, 4, 2, 3, 3, 0x2F)); // SC.D x3, x4, (x2)
+        h.step(&mut b);
+        assert_eq!(h.x[3], 0, "SC.D with valid reservation succeeds");
+        assert_eq!(b.lr_reservations[0], None, "SC.D clears reservation");
     }
 }

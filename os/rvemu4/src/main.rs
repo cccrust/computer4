@@ -41,8 +41,7 @@ fn main() {
 
     let mut poll_count: u64 = 0;
     let mut step_count: u64 = 0;
-    let mut did_sched_trace = false;
-    // eprintln!("Starting main loop, entry={:#x}, is_64={}, smp={}", entry, is_64, smp);
+    let mut last_state: u64 = 0;
     loop {
         for h in harts.iter_mut() {
             h.step(&mut bus);
@@ -50,9 +49,11 @@ fn main() {
         }
 
         poll_count += 1;
-        if step_count % 50_000_000 == 0 {
-            let pc = harts[0].pc;
-            eprintln!("STATE steps={}M pc={:#x} sp={:#x} sepc={:#x} scause={:#x} priv={} mip={:#x} mstatus={:#x} satp={:#x}", step_count/1_000_000, pc, harts[0].x[2], harts[0].sepc, harts[0].scause, harts[0].priv_level, harts[0].mip, harts[0].mstatus, harts[0].satp);
+        if step_count - last_state >= 100_000_000 {
+            last_state = step_count;
+            let h = &harts[0];
+            eprintln!("STATE steps={}M pc={:#x} stvec={:#x} satp={:#x} mip={:#x}",
+                step_count/1_000_000, h.pc, h.stvec, h.satp, h.mip);
         }
         if poll_count % 4096 == 0 {
             check_stdin(&mut bus);

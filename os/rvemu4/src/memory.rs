@@ -56,6 +56,7 @@ impl Uart {
         match off {
             0 => {
                 if self.lcr & 0x80 != 0 { return; }
+                if val == b'\n' { print!("\r"); }
                 print!("{}", val as char);
                 use std::io::Write;
                 std::io::stdout().flush().ok();
@@ -157,21 +158,21 @@ impl VirtioBlk {
     }
     pub fn process_queue(&mut self, ram: &mut [u8]) -> bool {
         if self.queue_ready == 0 || self.disk.is_none() { return false; }
-        let desc_base = self.queue_desc;
-        let avail_base = self.queue_avail;
-        let used_base = self.queue_used;
+        let desc_base = self.queue_desc.wrapping_sub(RAM_BASE);
+        let avail_base = self.queue_avail.wrapping_sub(RAM_BASE);
+        let used_base = self.queue_used.wrapping_sub(RAM_BASE);
         let ai = r16(ram, avail_base + 2);
         let ui = r16(ram, used_base + 2);
         if ui == ai { return false; }
         let di = r16(ram, avail_base + 4 + (ui as u64 % 8) * 2);
-        let d0a = r64(ram, desc_base + di as u64 * 16);
+        let d0a = r64(ram, desc_base + di as u64 * 16).wrapping_sub(RAM_BASE);
         let d0n = r16(ram, desc_base + di as u64 * 16 + 14);
         let typ = r32(ram, d0a);
         let sec = r64(ram, d0a + 8);
-        let d1a = r64(ram, desc_base + d0n as u64 * 16);
+        let d1a = r64(ram, desc_base + d0n as u64 * 16).wrapping_sub(RAM_BASE);
         let d1l = r32(ram, desc_base + d0n as u64 * 16 + 8);
         let d1n = r16(ram, desc_base + d0n as u64 * 16 + 14);
-        let d2a = r64(ram, desc_base + d1n as u64 * 16);
+        let d2a = r64(ram, desc_base + d1n as u64 * 16).wrapping_sub(RAM_BASE);
         if let Some(ref f) = self.disk {
             let mut file = f.try_clone().unwrap();
             if typ == 0 {

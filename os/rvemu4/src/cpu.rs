@@ -195,7 +195,7 @@ impl Hart {
         static INST_N: AtomicU64 = AtomicU64::new(0);
         let _n = INST_N.fetch_add(1, Ordering::Relaxed);
         let inst_raw = match self.vm_fetch(bus, self.pc, false) { Ok(v) => v as u32, Err(c) => { self.trap(c, self.pc); return true; } };
-        if self.pc > 0x88000000 || self.pc < 0x80000000 {
+        if self.pc > 0x88000000 && self.pc < 0x3FFFFFF000 && self.pc != 0 {
             eprintln!("DIVERGE steps={} pc={:#x} inst={:#010x} priv={} satp={:#x} stvec={:#x} sepc={:#x} scause={:#x} mstatus={:#x} x1={:#x} x2={:#x} x3={:#x} x4={:#x} x5={:#x} x6={:#x} x8={:#x} x9={:#x} x10={:#x}", _n, self.pc, inst_raw, self.priv_level, self.satp, self.stvec, self.sepc, self.scause, self.mstatus, self.x[1], self.x[2], self.x[3], self.x[4], self.x[5], self.x[6], self.x[8], self.x[9], self.x[10]);
             std::process::exit(1);
         }

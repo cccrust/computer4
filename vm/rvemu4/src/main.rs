@@ -1,67 +1,72 @@
+#![allow(dead_code, unused)]
+
 mod memory;
 mod cpu;
 mod elf;
 
 use std::env;
-use memory::{Bus, RAM_SIZE};
+use memory::{Bus, RAM_BASE, RAM_SIZE};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    let mut kernel_path = None;
-    let mut disk_path = None;
-    let mut smp = 1;
     let mut i = 1;
+    let mut kernel_path = None::<String>;
+    let mut disk_path = None::<String>;
+    let mut smp = 1;
+    let mut standalone_path = None::<String>;
     while i < args.len() {
         match args[i].as_str() {
-            "-kernel" => { i += 1; kernel_path = Some(args[i].clone()); }
-            "-drive" => { i += 1; disk_path = Some(args[i].clone()); }
-            "-smp" => { i += 1; smp = args[i].parse().unwrap_or(1); }
-            _ => {}
+            "-kernel" => { i += 1; if i < args.len() { kernel_path = Some(args[i].clone()); } }
+            "-drive" => { i += 1; if i < args.len() { disk_path = Some(args[i].clone()); } }
+            "-smp" => { i += 1; if i < args.len() { smp = args[i].parse().unwrap_or(1); } }
+            s if s.starts_with('-') => {}
+            _ => { standalone_path = Some(args[i].clone()); }
         }
         i += 1;
     }
 
-    let kernel_path = kernel_path.expect("Usage: rvemu4 -kernel <kernel.elf> [-drive <disk.img>] [-smp <n>] [-d]");
-
-    let mut bus = Bus::new(RAM_SIZE as usize);
-    let (entry, is_64) = elf::load_elf(&kernel_path, &mut bus);
-
-    if let Some(dp) = disk_path {
-        bus.vblk.init(&dp);
+    if kernel_path.is_none() && standalone_path.is_none() {
+        eprintln!("Usage: rvemu4 [-kernel <kernel.elf> [-drive <disk.img>]] [<program.elf>]");
+        std::process::exit(1);
     }
 
-    let smp = smp.max(1).min(8);
-    let mut harts: Vec<cpu::Hart> = (0..smp as u32).map(|id| {
-        let mut h = cpu::Hart::new(id);
-        h.reset(entry, is_64);
-        h
-    }).collect();
+    let mut bus = Bus::new(RAM_SIZE as usize);
 
-    set_raw_mode(true);
+    if let Some(ref kp) = kernel_path {
+        let result = elf::load_elf(kp, &mut bus);
+        if let Some(dp) = disk_path { bus.vblk.init(&dp); }
+        let smp = smp.max(1).min(8);
+        let mut harts: Vec<cpu::Hart> = (0..smp as u32).map(|id| {
+            let mut h = cpu::Hart::new(id);
+            h.reset(result.entry, result.is_64);
+            h
+        }).collect();
 
-    let mut poll_count: u64 = 0;
-    let mut step_count: u64 = 0;
-    let mut last_state: u64 = 0;
-    loop {
-        for h in harts.iter_mut() {
-            h.step(&mut bus);
-            step_count += 1;
-        }
+        set_raw_mode(true);
 
-        poll_count += 1;
-        if step_count - last_state >= 100_000_000 {
-            last_state = step_count;
-            let h = &harts[0];
-            eprintln!("STATE steps={}M pc={:#x} stvec={:#x} satp={:#x} mip={:#x}",
-                step_count/1_000_000, h.pc, h.stvec, h.satp, h.mip);
-        }
-        if poll_count % 4096 == 0 {
-            check_stdin(&mut bus);
-            if bus.uart_needs_pending() || (bus.uart_rx_ready() && (bus.uart_ier() & 1) != 0) {
-                bus.plic.set_pending(10);
-                bus.uart_clear_pending_tx_irq();
+        let mut step_count: u64 = 0;
+        loop {
+            for h in harts.iter_mut() { h.step(&mut bus); step_count += 1; }
+            if step_count % 4096 == 0 {
+                check_stdin(&mut bus);
+                if bus.uart_needs_pending() || (bus.uart_rx_ready() && (bus.uart_ier() & 1) != 0) {
+                    bus.plic.set_pending(10);
+                    bus.uart_clear_pending_tx_irq();
+                }
             }
         }
+    } else {
+        let sp = standalone_path.unwrap();
+        let result = elf::load_elf(&sp, &mut bus);
+        let mut hart = cpu::Hart::new(0);
+        hart.reset(result.entry, result.is_64);
+        hart.offset = RAM_BASE;
+        hart.x[2] = (RAM_SIZE - 0x1000) as u64; // sp (top of guest address space)
+        loop {
+            hart.step(&mut bus);
+            if hart.halt { break; }
+        }
+        std::process::exit(hart.exit_code);
     }
 }
 

@@ -28,6 +28,7 @@ const SSTATUS_MASK: u64 = 0x800DE162;
 
 pub struct Hart {
     pub x: [u64; 32], pub pc: u64, pub priv_level: u8, pub is_64: bool,
+    pub offset: u64, pub halt: bool, pub exit_code: i32,
     pub mstatus: u64, pub mie: u64, pub mip: u64,
     pub medeleg: u64, pub mideleg: u64,
     pub mepc: u64, pub mcause: u64, pub mtval: u64, pub mtvec: u64, pub mscratch: u64,
@@ -41,6 +42,7 @@ impl Hart {
     pub fn new(hart_id: u32) -> Self {
         Hart {
             x: [0; 32], pc: 0, priv_level: PRV_M, is_64: true,
+            offset: 0, halt: false, exit_code: 0,
             mstatus: 0, mie: 0, mip: 0, medeleg: 0, mideleg: 0,
             mepc: 0, mcause: 0, mtval: 0, mtvec: 0, mscratch: 0,
             mcounteren: 0, menvcfg: 0, mhartid: hart_id as u64,
@@ -97,8 +99,8 @@ impl Hart {
     }
 
     fn mmu_translate(&self, bus: &mut Bus, vaddr: u64, access: u8) -> Result<u64, u64> {
-        if self.priv_level == PRV_M { return Ok(vaddr); }
-        if (self.satp >> 60) != 8 { return Ok(vaddr); }
+        if self.priv_level == PRV_M { return Ok(vaddr.wrapping_add(self.offset)); }
+        if (self.satp >> 60) != 8 { return Ok(vaddr.wrapping_add(self.offset)); }
         let pt_base = (self.satp & 0xFFFFFFFFFFF) << 12;
         let idx = |lv: u32| (vaddr >> (12 + lv * 9)) & 0x1FF;
         let mut a = pt_base; let mut pte; let mut lvl: i32 = 2;
@@ -332,7 +334,42 @@ impl Hart {
             }
             0x0F => {}
             0x73 => {
-                if inst_raw == 0x00000073 { self.trap(match self.priv_level { 0 => 8, 1 => 9, _ => 11 }, 0); return true; }
+                if inst_raw == 0x00000073 {
+                    if self.offset > 0 && self.x[17] <= 2 {
+                        match self.x[17] {
+                            0 => { self.halt = true; self.exit_code = self.x[10] as i32; }
+                            1 => {
+                                let c = self.x[10] as u8;
+                                if c == b'\n' { unsafe { libc::write(1, b"\r\n\0" as *const _ as *const _, 2); } }
+                                else { unsafe { libc::write(1, &c as *const _ as *const _, 1); } }
+                            }
+                            _ => {
+                                let ptr = (self.x[10].wrapping_add(self.offset) - crate::memory::RAM_BASE) as usize;
+                                let len = self.x[11] as usize;
+                                if ptr + len <= bus.ram.len() {
+                                    let mut cr = false;
+                                    for off in 0..len {
+                                        let b = bus.ram[ptr + off];
+                                        if b == b'\n' { cr = true; }
+                                    }
+                                    if cr {
+                                        let mut out = Vec::with_capacity(len + 16);
+                                        for off in 0..len {
+                                            let b = bus.ram[ptr + off];
+                                            if b == b'\n' { out.push(b'\r'); }
+                                            out.push(b);
+                                        }
+                                        unsafe { libc::write(1, out.as_ptr() as *const _, out.len()); }
+                                    } else {
+                                        unsafe { libc::write(1, &bus.ram[ptr] as *const _ as *const _, len); }
+                                    }
+                                }
+                            }
+                        }
+                        self.pc = npc; self.x[0] = 0; self.instret += 1; self.check_interrupts(bus); return true;
+                    }
+                    self.trap(match self.priv_level { 0 => 8, 1 => 9, _ => 11 }, 0); return true;
+                }
                 if inst_raw == 0x00100073 { self.trap(EXC_BREAKPOINT, self.pc); return true; }
                 if inst_raw == 0x30200073 {
                     let mpp = ((self.mstatus >> 11) & 3) as u8;

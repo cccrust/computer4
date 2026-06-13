@@ -5,7 +5,30 @@ mod cpu;
 mod elf;
 
 use std::env;
+use std::sync::Mutex;
 use memory::{Bus, RAM_BASE, RAM_SIZE};
+
+static ORIG_TERMIOS: Mutex<Option<libc::termios>> = Mutex::new(None);
+
+struct RawModeGuard;
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        restore_termios();
+    }
+}
+
+fn restore_termios() {
+    use std::os::fd::AsRawFd;
+    if let Ok(guard) = ORIG_TERMIOS.lock() {
+        if let Some(orig) = *guard {
+            let fd = std::io::stdin().as_raw_fd();
+            unsafe { libc::tcsetattr(fd, libc::TCSAFLUSH, &orig); }
+        }
+    }
+}
+
+extern "C" fn atexit_cleanup() { restore_termios(); }
+extern "C" fn sigint_cleanup(_: i32) { restore_termios(); }
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -43,6 +66,9 @@ fn main() {
         }).collect();
 
         set_raw_mode(true);
+        let _guard = RawModeGuard;
+        unsafe { libc::atexit(atexit_cleanup); }
+        unsafe { libc::signal(libc::SIGINT, sigint_cleanup as *const () as libc::sighandler_t); }
 
         let mut step_count: u64 = 0;
         loop {
@@ -100,19 +126,25 @@ fn check_stdin(bus: &mut Bus) {
 }
 
 fn set_raw_mode(en: bool) {
-    if !en { return; }
     use std::os::fd::AsRawFd;
     let fd = std::io::stdin().as_raw_fd();
     if unsafe { libc::isatty(fd) } == 0 { return; }
     unsafe {
         let mut term: libc::termios = std::mem::zeroed();
         libc::tcgetattr(fd, &mut term);
-        term.c_iflag &= !(libc::BRKINT | libc::ICRNL | libc::INPCK | libc::ISTRIP | libc::IXON);
-        term.c_oflag &= !libc::OPOST;
-        term.c_cflag |= libc::CS8;
-        term.c_lflag &= !(libc::ECHO | libc::ICANON | libc::IEXTEN | libc::ISIG);
-        term.c_cc[libc::VMIN] = 0;
-        term.c_cc[libc::VTIME] = 0;
-        libc::tcsetattr(fd, libc::TCSAFLUSH, &term);
+        if en {
+            *ORIG_TERMIOS.lock().unwrap() = Some(term);
+            term.c_iflag &= !(libc::BRKINT | libc::ICRNL | libc::INPCK | libc::ISTRIP | libc::IXON);
+            term.c_oflag &= !libc::OPOST;
+            term.c_cflag |= libc::CS8;
+            term.c_lflag &= !(libc::ECHO | libc::ICANON | libc::IEXTEN | libc::ISIG);
+            term.c_cc[libc::VMIN] = 0;
+            term.c_cc[libc::VTIME] = 0;
+            libc::tcsetattr(fd, libc::TCSAFLUSH, &term);
+        } else {
+            if let Some(orig) = *ORIG_TERMIOS.lock().unwrap() {
+                libc::tcsetattr(fd, libc::TCSAFLUSH, &orig);
+            }
+        }
     }
 }

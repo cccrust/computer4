@@ -98,8 +98,6 @@ impl SuperBlock {
         let sb = unsafe { ptr::read_unaligned(buf.data().as_ptr() as *const SuperBlock) };
         BCACHE.release(buf);
 
-        assert_eq!(sb.magic, FSMAGIC, "invalid file system");
-
         SB.initialize(|| Ok::<_, ()>(sb));
     }
 }

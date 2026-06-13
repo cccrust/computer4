@@ -440,7 +440,7 @@ impl Hart {
                 0 => {
                     let nzu = (((i >> 10) & 1) << 7) | (((i >> 9) & 1) << 6) | (((i >> 8) & 1) << 5)
                         | (((i >> 7) & 1) << 4) | (((i >> 12) & 1) << 3) | (((i >> 11) & 1) << 2)
-                        | (((i >> 6) & 1) << 1) | ((i >> 5) & 1);
+                        | (((i >> 5) & 1) << 1) | ((i >> 6) & 1);
                     if nzu == 0 { self.trap(EXC_ILLEGAL_INST, i as u64); return true; }
                     self.x[rd_s] = self.x[2].wrapping_add((nzu as u64) << 2);
                 }
@@ -575,12 +575,12 @@ impl Hart {
                 0 => {
                     if rs1 != 0 { let sh = (i >> 2) as u64 & 0x1F | ((i >> 12) as u64 & 1) << 5; self.x[rs1] <<= sh; }
                 }
-                     2 => {
-                    let uimm = (((i>>4)&1)<<5) | (((i>>3)&1)<<4) | (((i>>2)&1)<<3) | (((i>>12)&1)<<2) | (((i>>6)&1)<<1) | ((i>>5)&1);
+                 2 => {
+                    let uimm = (((i>>3)&1)<<5) | (((i>>2)&1)<<4) | (((i>>12)&1)<<3) | (((i>>6)&1)<<2) | (((i>>5)&1)<<1) | ((i>>4)&1);
                     let addr = self.x[2].wrapping_add((uimm as u64) << 2);
                     match self.vm_read(bus, addr, 4) { Ok(v) => if rs1 != 0 { wr!(rs1, v as i32 as i64 as u64); }, Err(c) => { self.trap(c, addr); return true; } }
                 }
-                     3 => {
+                 3 => {
                     if self.is_64 {
                         let uimm = (((i>>4)&1)<<5) | (((i>>3)&1)<<4) | (((i>>2)&1)<<3) | (((i>>12)&1)<<2) | (((i>>6)&1)<<1) | ((i>>5)&1);
                         let addr = self.x[2].wrapping_add((uimm as u64) << 3);
@@ -599,7 +599,7 @@ impl Hart {
                     }
                 }
                  6 => {
-                    let uimm = (((i>>9)&1)<<5) | (((i>>8)&1)<<4) | (((i>>7)&1)<<3) | (((i>>12)&1)<<2) | (((i>>11)&1)<<1) | ((i>>10)&1);
+                    let uimm = (((i>>8)&1)<<5) | (((i>>7)&1)<<4) | (((i>>12)&1)<<3) | (((i>>11)&1)<<2) | (((i>>10)&1)<<1) | ((i>>9)&1);
                     let addr = self.x[2].wrapping_add((uimm as u64) << 2);
                     if self.vm_write(bus, addr, self.x[rs2] as u32 as u64, 4).is_err() { self.trap(EXC_STORE_PAGE_FAULT, addr); return true; }
                 }
@@ -727,9 +727,9 @@ mod tests {
 
     #[test]
     fn c_addi4spn_nzu1_off4() {
-        // nzu=1: {b10,b9,b8,b7,b12,b11,b6,b5} = {0,0,0,0,0,0,0,1}
-        // => bits[12:5]={b12=0,b11=0,b10=0,b9=0,b8=0,b7=0,b6=0,b5=1}=0x01
-        let inst: u16 = 0b000_00000001_000_00;
+        // nzu=1: {b10,b9,b8,b7,b12,b11,b5,b6} = {0,0,0,0,0,0,0,1}
+        // => bits[12:5]={b12=0,b11=0,b10=0,b9=0,b8=0,b7=0,b6=1,b5=0}=0x02
+        let inst: u16 = 0b000_00000010_000_00;
         let mut h = hart(&[0u64; 32], TEST_PC, true);
         h.x[2] = 0x1000;
         let mut b = bus();
@@ -1134,10 +1134,11 @@ mod tests {
 
     #[test]
     fn c_lwsp_offset_4() {
-        // uimm[5:0] = {b4,b3,b2,b12,b6,b5}, addr = sp + (uimm << 2)
-        // offset=4: uimm = 1 → b4=0,b3=0,b2=0,b12=0,b6=0,b5=1
-        // bits[12]=0, bits[6]=0, bits[5]=1, bits[4]=0, bits[3]=0, bits[2]=0
-        let inst: u16 = 0x40A2;
+        // CI format: uimm[5:0] = {b3,b2,b12,b6,b5,b4}, addr = sp + (uimm << 2)
+        // offset=4: uimm = 1 → bit4=1, all others 0
+        // enc = funct3=010 | b12=0 | rd=00001 | b6=0,b5=0,b4=1,b3=0,b2=0 | q=10
+        //     = 0x4092
+        let inst: u16 = 0x4092;
         let regs = [0u64; 32];
         let mut h = hart(&regs, TEST_PC, true);
         h.x[2] = 0x80002000;
@@ -1154,36 +1155,11 @@ mod tests {
 
     #[test]
     fn c_swsp_offset_8() {
-        // C.SWSP rs2, offset(sp): uimm = {b9,b8,b7,b12,b11,b10}, off = uimm << 2
-        // offset=8: uimm = 2 = 0b000010
-        // {b9=0,b8=0,b7=0,b12=0,b11=1,b10=0}
-        // bits[12]=0, bits[11]=1, bits[10]=0, bits[9]=0, bits[8]=0, bits[7]=0
-        // funct3=110, rs2=00001, q=10
-        // Encoding: 0b110_0_00001_000_10
-        // Hmm, CSS format: bits[12:7] = uimm[5:0, but CSS encodes
-        // bits[12]=b12, bits[11]=b11, bits[10]=b10, bits[9]=b9, bits[8]=b8, bits[7]=b7
-        // bits[15:13]=funct3, bits[11:7]=uimm[?], bits[6:2]=rs2, bits[1:0]=10
-        // No wait, CSS format from the spec:
-        // bits[15:13]=funct3=110, bits[12:7]=uimm[5:0], bits[6:2]=rs2, bits[1:0]=10
-
-        // So the spec encoding puts uimm at bits[12:7] in that exact order:
-        // uimm[5]=b12, uimm[4]=b11, uimm[3]=b10, uimm[2]=b9, uimm[1]=b8, uimm[0]=b7
-        // Hmm, that means uimm = {b12, b11, b10, b9, b8, b7}
-        // But our current code has: uimm = {b9, b8, b7, b12, b11, b10}
-        //
-        // The spec formula: off = {b12,b11,b10,b9,b8,b7,0,0} = uimm_spec << 2
-        // where uimm_spec = {b12,b11,b10,b9,b8,b7}
-        //
-        // Current code: uimm = {b9,b8,b7,b12,b11,b10}
-        // These are different! {b12,b11,b10,b9,b8,b7} vs {b9,b8,b7,b12,b11,b10}
-
-        // Hmm actually I verified this from the objdump earlier. Let me double check.
-        // C.SWSP offset encoding: uimm = {b9,b8,b7,b12,b11,b10}
-        // For offset=8: uimm = 2 → {b9=0,b8=0,b7=0,b12=0,b11=1,b10=0}
-        // bits[6:2] = rs2 = 00001 (x1)
-        // inst = 0b110_0_10000_00001_10 = 0xC806
-
-        let inst: u16 = 0xC806;
+        // CSS format: uimm[5:0] = {b8,b7,b12,b11,b10,b9}, off = uimm << 2
+        // offset=8: uimm = 2 → b10=1, all others 0
+        // enc = funct3=110 | b12=0,b11=0,b10=1,b9=0,b8=0,b7=0 | rs2=00001 | q=10
+        //     = 0xC406
+        let inst: u16 = 0xC406;
         let regs = [0u64; 32];
         let mut h = hart(&regs, TEST_PC, true);
         h.x[2] = 0x80002000;

@@ -17,7 +17,7 @@
 `define ALU_DIV   4'b1110
 `define ALU_DIVU  4'b1111
 
-module rv64i_cpu (
+module rv64i_cpu #(parameter BASE_ADDR = 64'h80000000) (
     input  wire       clk,
     input  wire       rst_n,
     output wire       dbg_ecall
@@ -30,12 +30,12 @@ module rv64i_cpu (
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n)
-            pc <= 64'b0;
+            pc <= BASE_ADDR;
         else
             pc <= pc_next;
     end
 
-    // ====== Instruction Memory (32-bit words, 32KB) ======
+    // ====== Unified Memory (32-bit words, 32KB) ======
     reg [31:0] imem [0:8191];
 
     wire [12:0] word_addr = pc[14:2];
@@ -55,8 +55,6 @@ module rv64i_cpu (
 
     integer init_i;
     initial begin
-        for (init_i = 0; init_i < 8192; init_i = init_i + 1)
-            imem[init_i] = 32'h00000013;
         $readmemh("program.hex", imem);
     end
 
@@ -67,6 +65,10 @@ module rv64i_cpu (
     wire [4:0] rs1     = instr[19:15];
     wire [4:0] rs2     = instr[24:20];
     wire [6:0] funct7  = instr[31:25];
+    wire [4:0] funct5  = instr[31:27];
+
+    wire is_lr = !is_compressed && opcode == 7'b0101111 && funct5 == 5'b00010 && funct3 == 3'b010;
+    wire is_sc = !is_compressed && opcode == 7'b0101111 && funct5 == 5'b00011 && funct3 == 3'b010;
 
     // RVC decoded fields
     wire [1:0] rvc_q      = fetch_half[1:0];
@@ -88,7 +90,8 @@ module rv64i_cpu (
                              (rvc_q == 2'b00) ? {2'b01, rvc_rs1q} :
                              (rvc_q == 2'b01 && rvc_funct3 == 3'b100 && fetch_half[11:10] == 2'b11) ? {2'b01, rvc_rs1q} :
                              (rvc_q == 2'b01 && (rvc_funct3 == 3'b110 || rvc_funct3 == 3'b111)) ? {2'b01, rvc_rs1q} :
-                             (rvc_q == 2'b10 && rvc_funct3 == 3'b100 && rvc_bit12 == 0 && rvc_rs2 != 0) ? 5'b0 :
+                              (rvc_q == 2'b10 && (rvc_funct3 == 3'b010 || rvc_funct3 == 3'b011 || rvc_funct3 == 3'b110 || rvc_funct3 == 3'b111)) ? 5'b00010 : // Q=10 SP-relative: LWSP/LDSP/SWSP/SDSP use sp
+                              (rvc_q == 2'b10 && rvc_funct3 == 3'b100 && rvc_bit12 == 0 && rvc_rs2 != 0) ? 5'b0 :
                              rvc_rd :
                              rs1;
     wire [4:0] rvc_rs25 = is_compressed ?
@@ -131,26 +134,29 @@ module rv64i_cpu (
 
     wire [63:0] rvc_imm_lui = {{43{rvc_imm_i6[5]}}, rvc_imm_i6, 12'b0};
 
-    wire [7:0] rvc_uimm_ldsp = {fetch_half[11:10], fetch_half[8:7], fetch_half[12], fetch_half[6], 3'b000};
-    wire [63:0] rvc_imm_ldsp = {56'b0, rvc_uimm_ldsp};
-
-    wire [6:0] rvc_uimm_lwsp = {fetch_half[11:10], fetch_half[8:7], fetch_half[12], fetch_half[6], 2'b00};
-    wire [63:0] rvc_imm_lwsp = {57'b0, rvc_uimm_lwsp};
-
-    wire [7:0] rvc_uimm_sdsp = {fetch_half[11:10], fetch_half[9:7], fetch_half[12], fetch_half[6], 3'b000};
-    wire [63:0] rvc_imm_sdsp = {56'b0, rvc_uimm_sdsp};
-
-    wire [6:0] rvc_uimm_swsp = {fetch_half[11:10], fetch_half[9:7], fetch_half[12], fetch_half[6], 2'b00};
-    wire [63:0] rvc_imm_swsp = {57'b0, rvc_uimm_swsp};
+    // Q=10 SP-relative: stores use bits[12:7], loads use bits[6:2]; all byte offsets (no scaling)
+    wire [5:0] rvc_uimm_sp_ld = {fetch_half[12], fetch_half[6:2]};
+    wire [63:0] rvc_imm_sp_ld = {58'b0, rvc_uimm_sp_ld};
+    wire [5:0] rvc_uimm_sp_st = {fetch_half[12], fetch_half[11:7]};
+    wire [63:0] rvc_imm_sp_st = {58'b0, rvc_uimm_sp_st};
 
     // ====== Register File ======
     reg [63:0] rf [0:31];
     wire [63:0] rf_rdata1 = (rvc_rs15 != 0) ? rf[rvc_rs15] : 64'b0;
     wire [63:0] rf_rdata2 = (rvc_rs25 != 0) ? rf[rvc_rs25] : 64'b0;
 
-    // ====== Data Memory (byte-addressable, 8KB) ======
-    reg [7:0] dmem [0:8191];
-    wire [12:0] dmem_addr = alu_result[12:0];
+    // ====== Data Memory (shared with imem, unified 256KB) ======
+    wire [12:0] data_word_addr = alu_result[14:2];
+    wire [1:0]  byte_lane = alu_result[1:0];
+    wire [31:0] data_word = imem[data_word_addr];
+    wire        is_sd = is_compressed ?
+                           ((rvc_q == 2'b10 && rvc_funct3 == 3'b111) ||   // C.SDSP
+                            (rvc_q == 2'b00 && rvc_funct3 == 3'b110)) :    // C.SD
+                           (opcode == 7'b0100011 && funct3 == 3'b011);     // SD (S-type)
+    wire        is_ram_addr = (alu_result >= BASE_ADDR && alu_result < BASE_ADDR + 262144);
+    wire        is_uart_mmio = (alu_result >= 32'h10000000 && alu_result < 32'h10000010);
+    wire        is_clint_mmio = (alu_result >= 32'h02000000 && alu_result < 32'h02010000);
+    wire        is_mmio = is_uart_mmio || is_clint_mmio;
 
     // ====== Immediate Generator (32-bit instructions) ======
     wire [63:0] imm_i = {{52{instr[31]}}, instr[31:20]};
@@ -164,9 +170,17 @@ module rv64i_cpu (
     reg [63:0] mcycle;
     reg [63:0] minstret;
     reg [63:0] mstatus;
+    reg [63:0] mie;
     reg [63:0] mtvec;
+    reg [63:0] mscratch;
     reg [63:0] mepc;
     reg [63:0] mcause;
+
+    // ====== CLINT Timer Registers ======
+    reg [63:0] clint_mtime;
+    reg [63:0] clint_mtimecmp;
+
+    wire timer_irq = mie[7] && (clint_mtime >= clint_mtimecmp);
 
     reg [63:0]  csr_rdata;
     reg         csr_write;
@@ -175,7 +189,9 @@ module rv64i_cpu (
     always @(*) begin
         case (instr[31:20])
             12'h300: csr_rdata = mstatus;
+            12'h304: csr_rdata = mie;
             12'h305: csr_rdata = mtvec;
+            12'h340: csr_rdata = mscratch;
             12'h341: csr_rdata = mepc;
             12'h342: csr_rdata = mcause;
             12'hB00: csr_rdata = mcycle;
@@ -184,10 +200,11 @@ module rv64i_cpu (
         endcase
     end
 
-    // ====== ECALL / MRET Detection ======
+    // ====== ECALL / MRET / WFI Detection ======
     wire [11:0] funct12 = instr[31:20];
     wire is_ecall = !is_compressed && opcode == 7'b1110011 && funct3 == 3'b000 && funct12 == 12'h000;
     wire is_mret  = !is_compressed && opcode == 7'b1110011 && funct3 == 3'b000 && funct12 == 12'h302;
+    wire is_wfi   = !is_compressed && opcode == 7'b1110011 && funct3 == 3'b000 && funct12 == 12'h105;
 
     assign dbg_ecall = is_ecall;
 
@@ -383,8 +400,19 @@ module rv64i_cpu (
                     alu_src_a = 1'b0; alu_src_b = 2'b01;
                     reg_src = 2'b10;
                 end
+                7'b0101111: begin // A-extension: lr.w / sc.w
+                    if (funct5 == 5'b00010) begin // lr.w
+                        reg_write = 1'b1;
+                        reg_src = 2'b01;
+                        alu_src_a = 1'b0; alu_src_b = 2'b01;
+                    end else if (funct5 == 5'b00011) begin // sc.w
+                        reg_write = 1'b1;
+                        mem_write = 1'b1;
+                        alu_src_a = 1'b0; alu_src_b = 2'b01;
+                    end
+                end
                 7'b1110011: begin
-                    if (!is_ecall && !is_mret) begin
+                    if (!is_ecall && !is_mret && !is_wfi) begin
                         csr_op = 1'b1;
                         reg_write = 1'b1;
                         if (funct3 == 3'b001 || funct3 == 3'b101) begin
@@ -420,11 +448,12 @@ module rv64i_cpu (
                              rvc_funct3 == 3'b100 && (fetch_half[11:10] == 2'b00) ? {59'b0, fetch_half[12], fetch_half[6:2]} :
                              rvc_imm) :
                          (rvc_q == 2'b10) ?
-                            (rvc_funct3 == 3'b000 ? {59'b0, rvc_rd[4:0]} :
-                             rvc_funct3 == 3'b001 ? rvc_imm_lwsp :
-                             rvc_funct3 == 3'b010 ? rvc_imm_ldsp :
-                             rvc_funct3 == 3'b110 ? rvc_imm_swsp :
-                             rvc_funct3 == 3'b111 ? rvc_imm_sdsp :
+                             (rvc_funct3 == 3'b000 ? {59'b0, rvc_rd[4:0]} :
+                              rvc_funct3 == 3'b001 ? rvc_imm_sp_ld :
+                              rvc_funct3 == 3'b010 ? rvc_imm_sp_ld :
+                              rvc_funct3 == 3'b011 ? rvc_imm_sp_ld :
+                              rvc_funct3 == 3'b110 ? rvc_imm_sp_st :
+                              rvc_funct3 == 3'b111 ? rvc_imm_sp_st :
                              rvc_imm) :
                          64'b0;
 
@@ -434,6 +463,8 @@ module rv64i_cpu (
                 2'b00: alu_b = rf_rdata2;
                 default: alu_b = rvc_alu_imm;
             endcase
+        end else if (opcode == 7'b0101111) begin
+            alu_b = 64'b0; // AMO: base address only (no offset)
         end else begin
             case (alu_src_b)
                 2'b00: alu_b = rf_rdata2;
@@ -545,23 +576,40 @@ module rv64i_cpu (
             mcycle   <= 64'b0;
             minstret <= 64'b0;
             mstatus  <= 64'b0;
+            mie      <= 64'b0;
             mtvec    <= 64'b0;
+            mscratch <= 64'b0;
             mepc     <= 64'b0;
             mcause   <= 64'b0;
+            clint_mtime    <= 64'b0;
+            clint_mtimecmp <= ~64'b0; // never fire by default
         end else begin
             mcycle <= mcycle + 1;
             minstret <= minstret + 1;
+            clint_mtime <= clint_mtime + 1;
             if (is_ecall) begin
                 mepc   <= pc;
                 mcause <= 64'd11;
             end
+            if (is_mret) begin
+                mstatus[3] <= mstatus[7]; // MIE <= MPIE
+                mstatus[7] <= 1'b1;       // MPIE <= 1
+            end
+            if (!is_mret && !is_ecall && timer_irq && mstatus[3]) begin
+                mepc   <= pc;
+                mcause <= 64'h8000000000000007;
+                mstatus[7] <= mstatus[3]; // MPIE <= old MIE
+                mstatus[3] <= 1'b0;       // MIE <= 0 (disable interrupts)
+            end
             if (csr_write && !is_ecall && !is_mret) begin
                 case (instr[31:20])
-                    12'h300: mstatus <= csr_wdata;
-                    12'h305: mtvec   <= csr_wdata;
-                    12'h341: mepc    <= csr_wdata;
-                    12'h342: mcause  <= csr_wdata;
-                    12'hB00: mcycle  <= csr_wdata;
+                    12'h300: mstatus  <= csr_wdata;
+                    12'h304: mie      <= csr_wdata;
+                    12'h305: mtvec    <= csr_wdata;
+                    12'h340: mscratch <= csr_wdata;
+                    12'h341: mepc     <= csr_wdata;
+                    12'h342: mcause   <= csr_wdata;
+                    12'hB00: mcycle   <= csr_wdata;
                     12'hB02: minstret <= csr_wdata;
                 endcase
             end
@@ -642,45 +690,71 @@ module rv64i_cpu (
     wire [63:0] jalr_target = (rf_rdata1 + (is_compressed ? 64'b0 : imm_i)) & ~64'h1;
 
     // ====== Program Counter Next ======
-    assign pc_next = jump ? (jalr ? jalr_target : jal_target) :
-                     branch_taken ? (pc + (is_compressed ? rvc_imm_b : imm_b)) :
-                     pc + pc_inc;
+    wire [63:0] pc_regular = jump ? (jalr ? jalr_target : jal_target) :
+                              branch_taken ? (pc + (is_compressed ? rvc_imm_b : imm_b)) :
+                              pc + pc_inc;
 
-    // ====== Data Memory Read ======
+    assign pc_next = is_mret ? mepc :
+                     (timer_irq && mstatus[3] && !is_ecall) ? mtvec :
+                     pc_regular;
+
+    // ====== MMIO Read (UART + CLINT) ======
+    reg [63:0] mmio_rdata;
+    always @(*) begin
+        mmio_rdata = 64'b0;
+        if (is_uart_mmio) begin
+            case (alu_result[3:0])
+                4'h0: mmio_rdata = 64'b0;               // RHR (no input)
+                4'h5: mmio_rdata = 64'h60;              // LSR (THR empty + TEMT)
+            endcase
+        end else if (is_clint_mmio) begin
+            case (alu_result[15:0])
+                16'hBFF8: mmio_rdata = clint_mtime;
+                16'h4000: mmio_rdata = clint_mtimecmp;
+            endcase
+        end
+    end
+
+    // ====== Data Memory Read (from unified imem) ======
     reg [63:0] mem_rdata_word;
     always @(*) begin
-        if (is_compressed && (rvc_q == 2'b10 && rvc_funct3 == 3'b010)) begin // C.LDSP
-            mem_rdata_word = {dmem[dmem_addr+7], dmem[dmem_addr+6],
-                              dmem[dmem_addr+5], dmem[dmem_addr+4],
-                              dmem[dmem_addr+3], dmem[dmem_addr+2],
-                              dmem[dmem_addr+1], dmem[dmem_addr]};
-        end else if (is_compressed) begin
-            if (rvc_q == 2'b00 && rvc_funct3 == 3'b011) begin // C.LD
-                mem_rdata_word = {dmem[dmem_addr+7], dmem[dmem_addr+6],
-                                  dmem[dmem_addr+5], dmem[dmem_addr+4],
-                                  dmem[dmem_addr+3], dmem[dmem_addr+2],
-                                  dmem[dmem_addr+1], dmem[dmem_addr]};
-            end else begin // C.LW / C.LWSP
-                mem_rdata_word = {{32{dmem[dmem_addr+3][7]}}, dmem[dmem_addr+3],
-                                  dmem[dmem_addr+2], dmem[dmem_addr+1], dmem[dmem_addr]};
-            end
+        if (is_mmio) begin
+            mem_rdata_word = mmio_rdata;
         end else begin
-            case (funct3)
-                3'b000: mem_rdata_word = {{56{dmem[dmem_addr][7]}}, dmem[dmem_addr]};
-                3'b001: mem_rdata_word = {{48{dmem[dmem_addr+1][7]}}, dmem[dmem_addr+1], dmem[dmem_addr]};
-                3'b010: mem_rdata_word = {{32{dmem[dmem_addr+3][7]}}, dmem[dmem_addr+3], dmem[dmem_addr+2],
-                                           dmem[dmem_addr+1], dmem[dmem_addr]};
-                3'b011: mem_rdata_word = {dmem[dmem_addr+7], dmem[dmem_addr+6], dmem[dmem_addr+5],
-                                           dmem[dmem_addr+4], dmem[dmem_addr+3], dmem[dmem_addr+2],
-                                           dmem[dmem_addr+1], dmem[dmem_addr]};
-                3'b100: mem_rdata_word = {56'b0, dmem[dmem_addr]};
-                3'b101: mem_rdata_word = {48'b0, dmem[dmem_addr+1], dmem[dmem_addr]};
-                3'b110: mem_rdata_word = {32'b0, dmem[dmem_addr+3], dmem[dmem_addr+2],
-                                           dmem[dmem_addr+1], dmem[dmem_addr]};
-                default: mem_rdata_word = {dmem[dmem_addr+7], dmem[dmem_addr+6], dmem[dmem_addr+5],
-                                            dmem[dmem_addr+4], dmem[dmem_addr+3], dmem[dmem_addr+2],
-                                            dmem[dmem_addr+1], dmem[dmem_addr]};
-            endcase
+            if (is_compressed && (rvc_q == 2'b10 && rvc_funct3 == 3'b010)) begin // C.LDSP
+                mem_rdata_word = {imem[data_word_addr+1], imem[data_word_addr]};
+            end else if (is_compressed && rvc_funct3 == 3'b011) begin // C.LD (Q=00)
+                mem_rdata_word = {imem[data_word_addr+1], imem[data_word_addr]};
+            end else if (is_compressed) begin // C.LW / C.LWSP
+                mem_rdata_word = {{32{data_word[31]}}, data_word};
+            end else begin
+                case (funct3)
+                    3'b000: begin // LB
+                        if      (byte_lane == 2'b00) mem_rdata_word = {{56{data_word[7]}},  data_word[7:0]};
+                        else if (byte_lane == 2'b01) mem_rdata_word = {{56{data_word[15]}}, data_word[15:8]};
+                        else if (byte_lane == 2'b10) mem_rdata_word = {{56{data_word[23]}}, data_word[23:16]};
+                        else                        mem_rdata_word = {{56{data_word[31]}}, data_word[31:24]};
+                    end
+                    3'b001: begin // LH
+                        if (byte_lane[1]) mem_rdata_word = {{48{data_word[31]}}, data_word[31:16]};
+                        else              mem_rdata_word = {{48{data_word[15]}}, data_word[15:0]};
+                    end
+                    3'b010: mem_rdata_word = {{32{data_word[31]}}, data_word};                // LW
+                    3'b011: mem_rdata_word = {imem[data_word_addr+1], data_word};             // LD
+                    3'b100: begin // LBU
+                        if      (byte_lane == 2'b00) mem_rdata_word = {56'b0, data_word[7:0]};
+                        else if (byte_lane == 2'b01) mem_rdata_word = {56'b0, data_word[15:8]};
+                        else if (byte_lane == 2'b10) mem_rdata_word = {56'b0, data_word[23:16]};
+                        else                        mem_rdata_word = {56'b0, data_word[31:24]};
+                    end
+                    3'b101: begin // LHU
+                        if (byte_lane[1]) mem_rdata_word = {48'b0, data_word[31:16]};
+                        else              mem_rdata_word = {48'b0, data_word[15:0]};
+                    end
+                    3'b110: mem_rdata_word = {32'b0, data_word};                              // LWU
+                    default: mem_rdata_word = {imem[data_word_addr+1], data_word};            // LD
+                endcase
+            end
         end
     end
 
@@ -717,55 +791,50 @@ module rv64i_cpu (
 
     // ====== Register File Write ======
     always @(posedge clk) begin
-        if (reg_write && rvc_rd5 != 0)
-            rf[rvc_rd5] <= reg_wdata;
+        if (reg_write && rvc_rd5 != 0) begin
+            if (is_sc)
+                rf[rvc_rd5] <= 64'b0; // sc.w always succeeds in single core
+            else
+                rf[rvc_rd5] <= reg_wdata;
+        end
     end
 
-    // ====== Data Memory Write ======
+    // ====== Data Memory Write (to unified imem) ======
+    // Comb: construct word to write into imem[data_word_addr]
+    reg [31:0] mem_wdata;
+    always @(*) begin
+        mem_wdata = imem[data_word_addr]; // default: read-modify-write
+        if (is_sd) begin
+            mem_wdata = rf_rdata2[31:0];
+        end else begin
+            case (funct3)
+                3'b000: begin
+                    if      (byte_lane == 2'b00) mem_wdata = {imem[data_word_addr][31:8], rf_rdata2[7:0]};
+                    else if (byte_lane == 2'b01) mem_wdata = {imem[data_word_addr][31:16], rf_rdata2[7:0], imem[data_word_addr][7:0]};
+                    else if (byte_lane == 2'b10) mem_wdata = {imem[data_word_addr][31:24], rf_rdata2[7:0], imem[data_word_addr][15:0]};
+                    else                         mem_wdata = {rf_rdata2[7:0], imem[data_word_addr][23:0]};
+                end
+                3'b001: begin
+                    if (byte_lane[1]) mem_wdata = {rf_rdata2[15:0], imem[data_word_addr][15:0]};
+                    else              mem_wdata = {imem[data_word_addr][31:16], rf_rdata2[15:0]};
+                end
+                default: mem_wdata = rf_rdata2[31:0]; // SW / (SD handled above)
+            endcase
+        end
+    end
+
     always @(posedge clk) begin
-        if (mem_write) begin
-            if (is_compressed && ((rvc_q == 2'b10 && rvc_funct3 == 3'b111) ||
-                                  (rvc_q == 2'b00 && rvc_funct3 == 3'b111))) begin // C.SDSP / C.SD
-                dmem[dmem_addr]   <= rf_rdata2[7:0];
-                dmem[dmem_addr+1] <= rf_rdata2[15:8];
-                dmem[dmem_addr+2] <= rf_rdata2[23:16];
-                dmem[dmem_addr+3] <= rf_rdata2[31:24];
-                dmem[dmem_addr+4] <= rf_rdata2[39:32];
-                dmem[dmem_addr+5] <= rf_rdata2[47:40];
-                dmem[dmem_addr+6] <= rf_rdata2[55:48];
-                dmem[dmem_addr+7] <= rf_rdata2[63:56];
-            end else if (is_compressed) begin // C.SWSP / C.SW
-                dmem[dmem_addr]   <= rf_rdata2[7:0];
-                dmem[dmem_addr+1] <= rf_rdata2[15:8];
-                dmem[dmem_addr+2] <= rf_rdata2[23:16];
-                dmem[dmem_addr+3] <= rf_rdata2[31:24];
-            end else begin
-                case (funct3)
-                    3'b000: begin
-                        dmem[dmem_addr]   <= rf_rdata2[7:0];
-                    end
-                    3'b001: begin
-                        dmem[dmem_addr]   <= rf_rdata2[7:0];
-                        dmem[dmem_addr+1] <= rf_rdata2[15:8];
-                    end
-                    3'b010: begin
-                        dmem[dmem_addr]   <= rf_rdata2[7:0];
-                        dmem[dmem_addr+1] <= rf_rdata2[15:8];
-                        dmem[dmem_addr+2] <= rf_rdata2[23:16];
-                        dmem[dmem_addr+3] <= rf_rdata2[31:24];
-                    end
-                    3'b011: begin
-                        dmem[dmem_addr]   <= rf_rdata2[7:0];
-                        dmem[dmem_addr+1] <= rf_rdata2[15:8];
-                        dmem[dmem_addr+2] <= rf_rdata2[23:16];
-                        dmem[dmem_addr+3] <= rf_rdata2[31:24];
-                        dmem[dmem_addr+4] <= rf_rdata2[39:32];
-                        dmem[dmem_addr+5] <= rf_rdata2[47:40];
-                        dmem[dmem_addr+6] <= rf_rdata2[55:48];
-                        dmem[dmem_addr+7] <= rf_rdata2[63:56];
-                    end
-                endcase
-            end
+        if (mem_write && is_uart_mmio && alu_result[3:0] == 4'h0) begin
+            $write("%c", rf_rdata2[7:0]);
+            $fflush();
+        end else if (mem_write && is_clint_mmio) begin
+            case (alu_result[15:0])
+                16'h4000: clint_mtimecmp <= rf_rdata2;
+            endcase
+        end else if (mem_write && !is_mmio) begin
+            imem[data_word_addr] <= mem_wdata;
+            if (is_sd)
+                imem[data_word_addr+1] <= rf_rdata2[63:32];
         end
     end
 

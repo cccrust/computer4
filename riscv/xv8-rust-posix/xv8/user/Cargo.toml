@@ -1,0 +1,370 @@
+[package]
+name = "user"
+version = "1.0.0"
+edition = "2024"
+authors = ["Boran Seckin <boran@boranseckin.com>"]
+description = "user space programs for xv8"
+repository = "https://github.com/cccrust/xv8-rust-posix"
+license = "MIT"
+keywords = ["riscv", "xv6"]
+
+[lib]
+name = "user"
+path = "src/lib.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "init"
+path = "bin/init.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "zombie"
+path = "bin/zombie.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "uptime"
+path = "bin/uptime.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "poweroff"
+path = "bin/poweroff.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "udp"
+path = "bin/udp.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "demo"
+path = "bin/demo.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "dns"
+path = "bin/dns.rs"
+
+[[bin]]
+name = "traceroute"
+path = "bin/traceroute.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "tcp_echo"
+path = "bin/tcp_echo.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "primes"
+path = "bin/primes.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "_testrunner"
+path = "testbin/testrunner.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "_sbrk"
+path = "testbin/sbrk.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "_cow"
+path = "testbin/cow.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "_fs"
+path = "testbin/fs.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "_pipe"
+path = "testbin/pipe.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "_proc"
+path = "testbin/proc.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "_fd"
+path = "testbin/fd.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "_net"
+path = "testbin/net.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "_syscall"
+path = "testbin/syscall.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "_thread"
+path = "testbin/thread.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "_thread_v3"
+path = "testbin/thread_v3.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "_neteth"
+path = "testbin/neteth.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "_netdns"
+path = "testbin/netdns.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "_tcpecho"
+path = "testbin/tcpecho.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "_nettools"
+path = "testbin/nettools.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "_http"
+path = "testbin/http.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "_async"
+path = "testbin/async.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "_httpepoll"
+path = "testbin/httpepoll.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "_shtest"
+path = "testbin/shtest.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "_axum"
+path = "testbin/axum.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "_eventfd"
+path = "testbin/eventfd.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "_memfd_create"
+path = "testbin/memfd.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "_pidfd"
+path = "testbin/pidfd.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "_splice"
+path = "testbin/splice.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "_getrandom"
+path = "testbin/getrandom.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "_close_range"
+path = "testbin/close_range.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "_inotify"
+path = "testbin/inotify.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "_signalfd"
+path = "testbin/signalfd.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "_timerfd"
+path = "testbin/timerfd.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "_ns_pid"
+path = "testbin/ns_pid.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "_ns_uts"
+path = "testbin/ns_uts.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "_setns"
+path = "testbin/setns.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "_cgroup"
+path = "testbin/cgroup.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "_capability"
+path = "testbin/capabilities.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "_seccomp"
+path = "testbin/seccomp.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "_overlay"
+path = "testbin/overlay.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "_veth"
+path = "testbin/veth.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "_pivot_root"
+path = "testbin/pivot_root.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "dock8"
+path = "bin/dock8.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "_container"
+path = "testbin/container.rs"
+test = false
+doctest = false
+bench = false
+
+[dependencies]
+kernel = { package = "xv8", path = "../kernel", version = "1.0.0" }
+xv8-tokio-compat = { path = "../../xv8rust/xv8-tokio-compat" }
+xv8-http = { path = "../../xv8rust/xv8-http" }
+xv8-router = { path = "../../xv8rust/xv8-router" }
+

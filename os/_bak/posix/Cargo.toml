@@ -1,3 +1,0 @@
-[workspace]
-members = ["libposix", "tools"]
-resolver = "3"

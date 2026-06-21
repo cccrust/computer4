@@ -178,7 +178,7 @@ unsafe extern "C" fn user_task1() {
 
 unsafe fn timer_init() {
     let id = r_mhartid();
-    let interval: u64 = 20000000;
+    let interval: u64 = 1000;
     set_mtimecmp(id, get_mtime() + interval);
     TIMER_SCRATCH[3] = clint_mtimecmp(id) as u32;
     TIMER_SCRATCH[4] = interval as u32;

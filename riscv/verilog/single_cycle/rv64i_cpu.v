@@ -35,10 +35,10 @@ module rv64i_cpu #(parameter BASE_ADDR = 64'h80000000) (
             pc <= pc_next;
     end
 
-    // ====== Unified Memory (32-bit words, 32KB) ======
-    reg [31:0] imem [0:8191];
+    // ====== Unified Memory (32-bit words, 256KB) ======
+    reg [31:0] imem [0:16383];
 
-    wire [12:0] word_addr = pc[14:2];
+    wire [13:0] word_addr = pc[15:2];
     wire        half_sel  = pc[1];
 
     wire [15:0] lower_half = imem[word_addr][15:0];
@@ -122,7 +122,7 @@ module rv64i_cpu #(parameter BASE_ADDR = 64'h80000000) (
 
     wire [63:0] rvc_imm_sd = rvc_imm_ld;
 
-    wire [6:0] rvc_uimm_lw = {fetch_half[11:10], fetch_half[12], fetch_half[6], fetch_half[7], 2'b00};
+    wire [6:0] rvc_uimm_lw = {fetch_half[5], fetch_half[12], fetch_half[11:10], fetch_half[6], 2'b00};
     wire [63:0] rvc_imm_lw = {57'b0, rvc_uimm_lw};
 
     wire [63:0] rvc_imm_sw = rvc_imm_lw;
@@ -146,12 +146,12 @@ module rv64i_cpu #(parameter BASE_ADDR = 64'h80000000) (
     wire [63:0] rf_rdata2 = (rvc_rs25 != 0) ? rf[rvc_rs25] : 64'b0;
 
     // ====== Data Memory (shared with imem, unified 256KB) ======
-    wire [12:0] data_word_addr = alu_result[14:2];
+    wire [13:0] data_word_addr = alu_result[15:2];
     wire [1:0]  byte_lane = alu_result[1:0];
     wire [31:0] data_word = imem[data_word_addr];
     wire        is_sd = is_compressed ?
                            ((rvc_q == 2'b10 && rvc_funct3 == 3'b111) ||   // C.SDSP
-                            (rvc_q == 2'b00 && rvc_funct3 == 3'b110)) :    // C.SD
+                            (rvc_q == 2'b00 && rvc_funct3 == 3'b011)) :    // C.SD (RV64) / C.FSW (RV32)
                            (opcode == 7'b0100011 && funct3 == 3'b011);     // SD (S-type)
     wire        is_ram_addr = (alu_result >= BASE_ADDR && alu_result < BASE_ADDR + 262144);
     wire        is_uart_mmio = (alu_result >= 32'h10000000 && alu_result < 32'h10000010);
@@ -339,21 +339,21 @@ module rv64i_cpu #(parameter BASE_ADDR = 64'h80000000) (
                         alu_src_a = 1'b0; alu_src_b = 2'b01;
                         reg_src = 2'b00;
                     end
-                    3'b001: begin // C.LW
+                    3'b001: begin // C.FLW (RV32) / C.LD (RV64)
                         reg_write = 1'b1;
                         alu_src_a = 1'b0; alu_src_b = 2'b01;
                         reg_src = 2'b01;
                     end
-                    3'b011: begin // C.LD
+                    3'b010: begin // C.LW
                         reg_write = 1'b1;
                         alu_src_a = 1'b0; alu_src_b = 2'b01;
                         reg_src = 2'b01;
                     end
-                    3'b010: begin // C.SW
+                    3'b011: begin // C.FSW (RV32) / C.SD (RV64)
                         mem_write = 1'b1;
                         alu_src_a = 1'b0; alu_src_b = 2'b01;
                     end
-                    3'b110: begin // C.SD
+                    3'b110: begin // C.SW
                         mem_write = 1'b1;
                         alu_src_a = 1'b0; alu_src_b = 2'b01;
                     end
@@ -437,10 +437,10 @@ module rv64i_cpu #(parameter BASE_ADDR = 64'h80000000) (
     wire [63:0] rvc_alu_imm;
     assign rvc_alu_imm = (rvc_q == 2'b00) ?
                             (rvc_funct3 == 3'b000 ? rvc_imm_addi4spn :
-                             rvc_funct3 == 3'b011 ? rvc_imm_ld :
-                             rvc_funct3 == 3'b001 ? rvc_imm_lw :
-                             rvc_funct3 == 3'b110 ? rvc_imm_sd :
-                             rvc_funct3 == 3'b010 ? rvc_imm_sw :
+                             rvc_funct3 == 3'b001 ? rvc_imm_ld :   // C.LD (RV64) / C.FLW (RV32)
+                             rvc_funct3 == 3'b010 ? rvc_imm_lw :   // C.LW
+                             rvc_funct3 == 3'b011 ? rvc_imm_ld :   // C.SD (RV64) / C.FSW (RV32)
+                             rvc_funct3 == 3'b110 ? rvc_imm_sw :   // C.SW
                              rvc_imm) :
                          (rvc_q == 2'b01) ?
                             (rvc_funct3 == 3'b011 && rvc_rd == 5'b00010 ? rvc_imm_addi16sp :
@@ -596,7 +596,7 @@ module rv64i_cpu #(parameter BASE_ADDR = 64'h80000000) (
                 mstatus[7] <= 1'b1;       // MPIE <= 1
             end
             if (!is_mret && !is_ecall && timer_irq && mstatus[3]) begin
-                mepc   <= pc;
+                mepc   <= pc + pc_inc;
                 mcause <= 64'h8000000000000007;
                 mstatus[7] <= mstatus[3]; // MPIE <= old MIE
                 mstatus[3] <= 1'b0;       // MIE <= 0 (disable interrupts)
@@ -710,6 +710,7 @@ module rv64i_cpu #(parameter BASE_ADDR = 64'h80000000) (
         end else if (is_clint_mmio) begin
             case (alu_result[15:0])
                 16'hBFF8: mmio_rdata = clint_mtime;
+                16'hBFFC: mmio_rdata = {32'b0, clint_mtime[63:32]};
                 16'h4000: mmio_rdata = clint_mtimecmp;
             endcase
         end
@@ -723,7 +724,7 @@ module rv64i_cpu #(parameter BASE_ADDR = 64'h80000000) (
         end else begin
             if (is_compressed && (rvc_q == 2'b10 && rvc_funct3 == 3'b010)) begin // C.LDSP
                 mem_rdata_word = {imem[data_word_addr+1], imem[data_word_addr]};
-            end else if (is_compressed && rvc_funct3 == 3'b011) begin // C.LD (Q=00)
+            end else if (is_compressed && rvc_funct3 == 3'b001) begin // C.LD (Q=00)
                 mem_rdata_word = {imem[data_word_addr+1], imem[data_word_addr]};
             end else if (is_compressed) begin // C.LW / C.LWSP
                 mem_rdata_word = {{32{data_word[31]}}, data_word};
@@ -830,6 +831,7 @@ module rv64i_cpu #(parameter BASE_ADDR = 64'h80000000) (
         end else if (mem_write && is_clint_mmio) begin
             case (alu_result[15:0])
                 16'h4000: clint_mtimecmp <= rf_rdata2;
+                16'h4004: clint_mtimecmp[63:32] <= rf_rdata2[31:0];
             endcase
         end else if (mem_write && !is_mmio) begin
             imem[data_word_addr] <= mem_wdata;

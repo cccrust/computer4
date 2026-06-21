@@ -44,7 +44,7 @@ module tb_rv64i;
         rst_n = 1;
         #5;
 
-        for (i = 0; i < 10000; i = i + 1) begin
+        for (i = 0; i < 100000; i = i + 1) begin
             #10;
             if (term) begin
                 $display("");
@@ -61,6 +61,17 @@ module tb_rv64i;
         $display("");
         $display("  #####  PASS (timeout with UART)  #####");
         $finish;
+    end
+
+    // Trace first 200 instructions
+    integer trace_cnt;
+    initial trace_cnt = 0;
+    always @(posedge clk) begin
+        if (trace_cnt < 200) begin
+            $display("[%d] PC=%h sp=%h a0=%h a1=%h a2=%h a7=%h",
+                trace_cnt, cpu.pc, cpu.rf[2], cpu.rf[10], cpu.rf[11], cpu.rf[12], cpu.rf[17]);
+            trace_cnt = trace_cnt + 1;
+        end
     end
 
     // UART write monitor

@@ -3,6 +3,8 @@ set -e
 SIMDIR="/Users/Shared/ccc/project/computer4/riscv/verilog/single_cycle"
 OSDIR="/Users/Shared/ccc/project/computer4/riscv/mini-riscv-os"
 BIN2HEX="$SIMDIR/bin2hex.py"
+CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/private/tmp/mini-riscv-os-target}"
+export CARGO_TARGET_DIR
 
 echo "========================================"
 echo "  mini-riscv-os on RV64IM + Zicsr + C"
@@ -41,13 +43,18 @@ with open('$SIMDIR/program.hex', 'w') as f:
 "
 
 echo ""
-echo "  Step 4: Compile simulation ..."
-iverilog -o "$SIMDIR/single_cycle_tb" "$SIMDIR/rv64i_cpu.v" "$SIMDIR/tb_rv64i.v" 2>&1
+echo "  Step 4: Compile simulation (Verilator) ..."
+cd "$SIMDIR"
+verilator --binary --trace -o single_cycle_tb_vlt \
+  --top-module tb_rv64i \
+  -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-CASEINCOMPLETE -Wno-TIMESCALEMOD \
+  rv64i_cpu.v tb_rv64i.v 2>&1
 
 echo ""
 echo "  Step 5: Run simulation ..."
-cd "$SIMDIR"
-vvp single_cycle_tb 2>&1 | grep -v '^\[.*\] PC=' | tee /tmp/vvp_out.txt
+cd "$SIMDIR/obj_dir"
+ln -sf ../program.hex program.hex 2>/dev/null || true
+./single_cycle_tb_vlt 2>&1 | grep -v '^\[.*\] PC=' | tee /tmp/vvp_out.txt
 
 if grep -q "PASS" /tmp/vvp_out.txt; then
     echo ""

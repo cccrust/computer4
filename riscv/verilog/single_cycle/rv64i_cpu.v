@@ -297,12 +297,17 @@ module rv64i_cpu #(parameter BASE_ADDR = 64'h80000000) (
                         alu_src_a = 1'b0; alu_src_b = 2'b01;
                         reg_src = 2'b00;
                     end
-                    3'b001: begin // C.LWSP
+                    3'b001: begin // C.FLWSP / reserved
                         reg_write = (rvc_rd != 0);
                         alu_src_a = 1'b0; alu_src_b = 2'b01;
                         reg_src = 2'b01;
                     end
-                    3'b010: begin // C.LDSP
+                    3'b010: begin // C.LWSP
+                        reg_write = (rvc_rd != 0);
+                        alu_src_a = 1'b0; alu_src_b = 2'b01;
+                        reg_src = 2'b01;
+                    end
+                    3'b011: begin // C.LDSP (RV64)
                         reg_write = (rvc_rd != 0);
                         alu_src_a = 1'b0; alu_src_b = 2'b01;
                         reg_src = 2'b01;
@@ -531,17 +536,16 @@ module rv64i_cpu #(parameter BASE_ADDR = 64'h80000000) (
                 default: alu_ctrl = `ALU_ADD;
             endcase
         end else if (opcode == 7'b0010011) begin
-            case ({funct7, funct3})
-                {7'b0000000, 3'b000}: alu_ctrl = `ALU_ADD;
-                {7'b0100000, 3'b000}: alu_ctrl = `ALU_SUB;
-                {7'b0000000, 3'b001}: alu_ctrl = `ALU_SLL;
-                {7'b0000000, 3'b010}: alu_ctrl = `ALU_SLT;
-                {7'b0000000, 3'b011}: alu_ctrl = `ALU_SLTU;
-                {7'b0000000, 3'b100}: alu_ctrl = `ALU_XOR;
-                {7'b0000000, 3'b101}: alu_ctrl = `ALU_SRL;
-                {7'b0100000, 3'b101}: alu_ctrl = `ALU_SRA;
-                {7'b0000000, 3'b110}: alu_ctrl = `ALU_OR;
-                {7'b0000000, 3'b111}: alu_ctrl = `ALU_AND;
+            // FIX: use funct3 only for logical/arithmetic ops (funct7 overlaps with immediate)
+            case (funct3)
+                3'b000: alu_ctrl = `ALU_ADD;        // ADDI
+                3'b001: alu_ctrl = (funct7[5] == 1'b0) ? `ALU_SLL : `ALU_ADD; // SLLI
+                3'b010: alu_ctrl = `ALU_SLT;         // SLTI
+                3'b011: alu_ctrl = `ALU_SLTU;        // SLTIU
+                3'b100: alu_ctrl = `ALU_XOR;         // XORI
+                3'b101: alu_ctrl = funct7[5] ? `ALU_SRA : `ALU_SRL; // SRLI/SRAI
+                3'b110: alu_ctrl = `ALU_OR;          // ORI
+                3'b111: alu_ctrl = `ALU_AND;         // ANDI
                 default: alu_ctrl = `ALU_ADD;
             endcase
         end else if (opcode == 7'b0110111) begin
@@ -611,6 +615,12 @@ module rv64i_cpu #(parameter BASE_ADDR = 64'h80000000) (
                     12'h342: mcause   <= csr_wdata;
                     12'hB00: mcycle   <= csr_wdata;
                     12'hB02: minstret <= csr_wdata;
+                endcase
+            end
+            if (mem_write && is_clint_mmio) begin
+                case (alu_result[15:0])
+                    16'h4000: clint_mtimecmp <= rf_rdata2;
+                    16'h4004: clint_mtimecmp[63:32] <= rf_rdata2[31:0];
                 endcase
             end
         end
@@ -722,9 +732,11 @@ module rv64i_cpu #(parameter BASE_ADDR = 64'h80000000) (
         if (is_mmio) begin
             mem_rdata_word = mmio_rdata;
         end else begin
-            if (is_compressed && (rvc_q == 2'b10 && rvc_funct3 == 3'b010)) begin // C.LDSP
+            if (is_compressed && (rvc_q == 2'b10 && rvc_funct3 == 3'b010)) begin // C.LWSP
+                mem_rdata_word = {{32{data_word[31]}}, data_word};
+            end else if (is_compressed && (rvc_q == 2'b10 && rvc_funct3 == 3'b011)) begin // C.LDSP (RV64)
                 mem_rdata_word = {imem[data_word_addr+1], imem[data_word_addr]};
-            end else if (is_compressed && rvc_funct3 == 3'b001) begin // C.LD (Q=00)
+            end else if (is_compressed && rvc_q == 2'b00 && rvc_funct3 == 3'b001) begin // C.LD (Q=00)
                 mem_rdata_word = {imem[data_word_addr+1], imem[data_word_addr]};
             end else if (is_compressed) begin // C.LW / C.LWSP
                 mem_rdata_word = {{32{data_word[31]}}, data_word};
@@ -795,8 +807,9 @@ module rv64i_cpu #(parameter BASE_ADDR = 64'h80000000) (
         if (reg_write && rvc_rd5 != 0) begin
             if (is_sc)
                 rf[rvc_rd5] <= 64'b0; // sc.w always succeeds in single core
-            else
+            else begin
                 rf[rvc_rd5] <= reg_wdata;
+            end
         end
     end
 
@@ -826,13 +839,11 @@ module rv64i_cpu #(parameter BASE_ADDR = 64'h80000000) (
 
     always @(posedge clk) begin
         if (mem_write && is_uart_mmio && alu_result[3:0] == 4'h0) begin
+            if (rf_rdata2[7:0] >= 8'h80) begin
+                $display("[UART_BAD] pc=%h a0=%h byte=%02h", pc, rf_rdata2, rf_rdata2[7:0]);
+            end
             $write("%c", rf_rdata2[7:0]);
             $fflush();
-        end else if (mem_write && is_clint_mmio) begin
-            case (alu_result[15:0])
-                16'h4000: clint_mtimecmp <= rf_rdata2;
-                16'h4004: clint_mtimecmp[63:32] <= rf_rdata2[31:0];
-            endcase
         end else if (mem_write && !is_mmio) begin
             imem[data_word_addr] <= mem_wdata;
             if (is_sd)

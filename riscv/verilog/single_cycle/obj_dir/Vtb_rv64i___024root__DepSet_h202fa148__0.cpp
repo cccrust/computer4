@@ -406,10 +406,12 @@ VL_INLINE_OPT void Vtb_rv64i___024root___nba_sequent__TOP__1(Vtb_rv64i___024root
                       & (IData)(vlSelfRef.tb_rv64i__DOT__cpu__DOT__is_uart_mmio)) 
                      & (0U == (0xfU & (IData)(vlSelfRef.tb_rv64i__DOT__cpu__DOT__alu_result)))))) {
         if (VL_UNLIKELY((0x80U <= (0xffU & (IData)(vlSelfRef.tb_rv64i__DOT__cpu__DOT__rf_rdata2))))) {
-            VL_WRITEF_NX("[UART_BAD] pc=%x a0=%x byte=%02x\n",0,
+            VL_WRITEF_NX("[UART_BAD] cycle=%0# pc=%x a0=%x byte=%02x alu=%x\n",0,
+                         64,VL_TIME_UNITED_Q(1000),
                          64,vlSelfRef.tb_rv64i__DOT__cpu__DOT__pc,
                          64,vlSelfRef.tb_rv64i__DOT__cpu__DOT__rf_rdata2,
-                         8,(0xffU & (IData)(vlSelfRef.tb_rv64i__DOT__cpu__DOT__rf_rdata2)));
+                         8,(0xffU & (IData)(vlSelfRef.tb_rv64i__DOT__cpu__DOT__rf_rdata2)),
+                         64,vlSelfRef.tb_rv64i__DOT__cpu__DOT__alu_result);
         }
         VL_WRITEF_NX("%c",0,8,(0xffU & (IData)(vlSelfRef.tb_rv64i__DOT__cpu__DOT__rf_rdata2)));
         Verilated::runFlushCallbacks();

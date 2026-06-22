@@ -840,7 +840,7 @@ module rv64i_cpu #(parameter BASE_ADDR = 64'h80000000) (
     always @(posedge clk) begin
         if (mem_write && is_uart_mmio && alu_result[3:0] == 4'h0) begin
             if (rf_rdata2[7:0] >= 8'h80) begin
-                $display("[UART_BAD] pc=%h a0=%h byte=%02h", pc, rf_rdata2, rf_rdata2[7:0]);
+                $display("[UART_BAD] cycle=%0d pc=%h a0=%h byte=%02h alu=%h", $time, pc, rf_rdata2, rf_rdata2[7:0], alu_result);
             end
             $write("%c", rf_rdata2[7:0]);
             $fflush();
